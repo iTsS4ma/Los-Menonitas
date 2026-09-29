@@ -52,3 +52,11 @@
     margin: 8mm;
   }
 }
+
+/* El ticket permanece en el DOM (necesario en celulares) pero no se ve en pantalla */
+@media screen {
+  #ticket-impresion,
+  #ticket-cuenta {
+    display: none !important;
+  }
+}

@@ -37,6 +37,7 @@ export default function VistaCaja({ cuentaInicial = null }: { cuentaInicial?: st
   const [metodo, setMetodo] = useState<MetodoPago>("EFECTIVO");
   const [ticketCuenta, setTicketCuenta] = useState<Cuenta | null>(null);
   const [horaTicket, setHoraTicket] = useState<string>("");
+  const [ordenImpresion, setOrdenImpresion] = useState(0);
   const [cargando, setCargando] = useState(false);
   const [errorCarga, setErrorCarga] = useState("");
 
@@ -150,17 +151,16 @@ export default function VistaCaja({ cuentaInicial = null }: { cuentaInicial?: st
     if (cuenta.estado !== "CUENTA_SOLICITADA") return;
     setHoraTicket(horaActualMX());
     setTicketCuenta(cuenta);
+    setOrdenImpresion((n) => n + 1);
   };
 
+  // No se borra el ticket tras imprimir: en iPhone/Android window.print() no espera
+  // y si se quita el ticket, la vista previa sale en blanco.
   useEffect(() => {
-    if (ticketCuenta) {
-      const timer = setTimeout(() => {
-        window.print();
-        setTicketCuenta(null);
-      }, 250);
-      return () => clearTimeout(timer);
-    }
-  }, [ticketCuenta]);
+    if (ordenImpresion === 0) return;
+    const timer = setTimeout(() => window.print(), 300);
+    return () => clearTimeout(timer);
+  }, [ordenImpresion]);
 
   const productosAgrupados = useMemo(() => {
     if (!ticketCuenta) return [];

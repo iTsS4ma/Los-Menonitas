@@ -59,6 +59,7 @@ export default function VistaMesero({ perfil }: { perfil: Perfil }) {
 
   // Estado para disparar la impresión del ticket de cancelación
   const [ticketCancelacion, setTicketCancelacion] = useState<DatosTicketCancelacion | null>(null);
+  const [ordenImpresion, setOrdenImpresion] = useState(0);
 
   const cargar = useCallback(async () => {
     const [m, c, cat, p, o] = await Promise.all([
@@ -86,15 +87,12 @@ export default function VistaMesero({ perfil }: { perfil: Perfil }) {
   const cuenta = cuentas.find((c) => c.id === cuentaId) ?? null;
 
   // Disparar ventana de impresión cuando se prepara un ticket de cancelación
+  // No se borra el ticket tras imprimir (en celulares window.print() no espera)
   useEffect(() => {
-    if (ticketCancelacion) {
-      const timer = setTimeout(() => {
-        window.print();
-        setTicketCancelacion(null);
-      }, 250);
-      return () => clearTimeout(timer);
-    }
-  }, [ticketCancelacion]);
+    if (ordenImpresion === 0) return;
+    const timer = setTimeout(() => window.print(), 300);
+    return () => clearTimeout(timer);
+  }, [ordenImpresion]);
 
   async function ejecutar(accion: () => PromiseLike<{ error: unknown }>) {
     setAviso("");
@@ -157,6 +155,7 @@ export default function VistaMesero({ perfil }: { perfil: Perfil }) {
         motivo: motivo.trim(),
         hora: horaActualMX(),
       });
+      setOrdenImpresion((n) => n + 1);
     }
   }
 
@@ -186,6 +185,7 @@ export default function VistaMesero({ perfil }: { perfil: Perfil }) {
         motivo: motivo.trim(),
         hora: horaActualMX(),
       });
+      setOrdenImpresion((n) => n + 1);
     }
   }
 

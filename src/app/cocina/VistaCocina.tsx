@@ -18,8 +18,10 @@ export default function VistaCocina() {
   const idsProcesadosRef = useRef<Set<string>>(new Set());
   const inicializadoRef = useRef(false);
 
+  // Cola: si llegan varias rondas juntas, se imprimen todas en orden
+  const [cola, setCola] = useState<Pedido[]>([]);
   const imprimirComanda = (pedido: Pedido) => {
-    setTicketActual(pedido);
+    setCola((prev) => [...prev, pedido]);
   };
 
   const cargar = useCallback(async () => {
@@ -51,16 +53,17 @@ export default function VistaCocina() {
 
   const conectado = useTiempoReal("cocina", ["pedidos", "detalle_pedido"], cargar);
 
-  // Efecto que ejecuta la impresión
+  // El ticket no se borra al imprimir (en celulares window.print() no espera);
+  // se reemplaza por el siguiente de la cola.
   useEffect(() => {
-    if (ticketActual) {
-      const timer = setTimeout(() => {
-        window.print();
-        setTicketActual(null);
-      }, 250);
-      return () => clearTimeout(timer);
-    }
-  }, [ticketActual]);
+    if (cola.length === 0) return;
+    setTicketActual(cola[0]);
+    const timer = setTimeout(() => {
+      window.print();
+      setCola((prev) => prev.slice(1));
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [cola]);
 
   // Actualiza minutos transcurridos cada 10s
   useEffect(() => {
