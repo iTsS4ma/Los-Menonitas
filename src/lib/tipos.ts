@@ -19,9 +19,12 @@ export type Detalle = {
 export type Pedido = {
   id: string; cuenta_id: string; numero_ronda: number; estado: EstadoPedido;
   creado_en: string; listo_en: string | null; detalle_pedido: Detalle[];
+  cuentas?: Omit<Cuenta, "pedidos"> | null;
 };
 export type Cuenta = {
   id: string; tipo: "MESA" | "PARA_LLEVAR"; mesa_id: string | null; nombre_cliente: string | null;
   numero_orden: number | null; estado: EstadoCuenta; abierta_en: string;
   mesas: { numero: number } | null; pedidos: Pedido[];
 };
+export type MetodoPago = Metodo;
+export type DetallePedido = Detalle;

@@ -151,7 +151,7 @@ export default function VistaMesero({ perfil }: { perfil: Perfil }) {
           {
             nombre: `${d.nombre_producto}${d.nombre_opcion ? ` (${d.nombre_opcion})` : ""}`,
             cantidad: cantidadTexto(d),
-            notas: d.notas,
+            notas: d.notas ?? undefined,
           },
         ],
         motivo: motivo.trim(),
@@ -176,7 +176,7 @@ export default function VistaMesero({ perfil }: { perfil: Perfil }) {
         .map((d) => ({
           nombre: `${d.nombre_producto}${d.nombre_opcion ? ` (${d.nombre_opcion})` : ""}`,
           cantidad: cantidadTexto(d),
-          notas: d.notas,
+          notas: d.notas ?? undefined,
         }));
 
       setTicketCancelacion({

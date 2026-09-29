@@ -71,7 +71,7 @@ export default function PaginaAdmin() {
       // 4. Vincular mesas y pedidos
       const cuentasCompletas: Cuenta[] = cuentasRaw.map((c) => ({
         ...c,
-        mesas: c.mesa_id ? mapaMesas.get(c.mesa_id) : undefined,
+        mesas: c.mesa_id ? mapaMesas.get(c.mesa_id) ?? null : null,
         pedidos: pedidosList.filter((p) => p.cuenta_id === c.id),
       }));
 

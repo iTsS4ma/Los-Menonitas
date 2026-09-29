@@ -30,10 +30,10 @@ function horaActualMX() {
   }).format(new Date());
 }
 
-export default function VistaCaja() {
+export default function VistaCaja({ cuentaInicial = null }: { cuentaInicial?: string | null }) {
   const supabase = useMemo(() => crearClienteNavegador(), []);
   const [cuentas, setCuentas] = useState<Cuenta[]>([]);
-  const [cuentaIdSeleccionada, setCuentaIdSeleccionada] = useState<string | null>(null);
+  const [cuentaIdSeleccionada, setCuentaIdSeleccionada] = useState<string | null>(cuentaInicial);
   const [metodo, setMetodo] = useState<MetodoPago>("EFECTIVO");
   const [ticketCuenta, setTicketCuenta] = useState<Cuenta | null>(null);
   const [horaTicket, setHoraTicket] = useState<string>("");
@@ -100,7 +100,7 @@ export default function VistaCaja() {
 
     const cuentasCompletas: Cuenta[] = listaCuentasRaw.map((c) => ({
       ...c,
-      mesas: c.mesa_id ? mapaMesas.get(c.mesa_id) : undefined,
+      mesas: c.mesa_id ? mapaMesas.get(c.mesa_id) ?? null : null,
       pedidos: listaPedidos.filter((p) => p.cuenta_id === c.id),
     }));
 
