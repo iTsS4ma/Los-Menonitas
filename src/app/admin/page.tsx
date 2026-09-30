@@ -7,13 +7,30 @@ import { crearClienteNavegador } from "@/lib/supabase/client";
 import { diaMX, dinero, nombreCuenta, totalCuenta } from "@/lib/formato";
 import type { Cuenta, Pedido, Mesa } from "@/lib/tipos";
 
-type ResumenVentas = {
-  totalIngresos: number;
-  totalCuentas: number;
-  totalEfectivo: number;
-  totalTarjeta: number;
-  totalTransferencia: number;
+// Cuenta cerrada con los campos extra que guarda la base al cobrar
+type CuentaCerrada = Cuenta & {
+  mesa_id?: string | null;
+  mesero_id?: string | null;
+  cerrada_en?: string | null;
+  total_final?: number | null;
+  metodo_pago?: string | null;
 };
+
+type ProductoVendido = {
+  nombre: string;
+  unidad: "PIEZA" | "KG";
+  cantidad: number;
+  importe: number;
+};
+
+const ETIQUETA_METODO: Record<string, string> = {
+  EFECTIVO: "Efectivo",
+  TARJETA: "Tarjeta",
+  TRANSFERENCIA: "Transferencia",
+};
+
+// Día (YYYY-MM-DD) en hora de CDMX, para que las ventas de la noche no caigan en el día siguiente
+const diaDe = (fecha: string) => new Date(fecha).toLocaleDateString("en-CA", { timeZone: "America/Mexico_City" });
 
 export default function PaginaAdmin() {
   const supabase = useMemo(() => crearClienteNavegador(), []);
@@ -21,80 +38,75 @@ export default function PaginaAdmin() {
   const [fechaDesde, setFechaDesde] = useState<string>("");
   const [fechaHasta, setFechaHasta] = useState<string>("");
 
-  const [cuentasCerradas, setCuentasCerradas] = useState<Cuenta[]>([]);
+  const [cuentasCerradas, setCuentasCerradas] = useState<CuentaCerrada[]>([]);
+  const [nombres, setNombres] = useState<Map<string, string>>(new Map());
   const [cargando, setCargando] = useState(true);
   const [errorCarga, setErrorCarga] = useState("");
+
+  const [ordenProductos, setOrdenProductos] = useState<"importe" | "cantidad">("importe");
+  const [verTodos, setVerTodos] = useState(false);
 
   const cargarDatos = useCallback(async () => {
     setCargando(true);
 
     try {
-      // 1. Cargar mesas
-      const resMesas = await supabase.from("mesas").select("*");
-      const listaMesas = (resMesas.data || []) as Mesa[];
+      // 1. Mesas y personal (para mostrar número de mesa y nombre del mesero)
+      const [resMesas, resUsuarios] = await Promise.all([
+        supabase.from("mesas").select("*"),
+        supabase.from("usuarios").select("id, nombre"),
+      ]);
       const mapaMesas = new Map<string, Mesa>();
-      listaMesas.forEach((m) => mapaMesas.set(m.id, m));
+      ((resMesas.data || []) as Mesa[]).forEach((m) => mapaMesas.set(m.id, m));
+      const mapaNombres = new Map<string, string>();
+      ((resUsuarios.data || []) as { id: string; nombre: string }[]).forEach((u) => mapaNombres.set(u.id, u.nombre));
+      setNombres(mapaNombres);
 
-      // 2. Cargar todas las cuentas (tanto abiertas como cerradas)
+      // 2. Solo cuentas cobradas
       const { data: dataCuentas, error: errCuentas } = await supabase
         .from("cuentas")
-        .select("*");
+        .select("*")
+        .eq("estado", "CERRADA");
 
       if (errCuentas) {
-        console.error("Detalle exacto error cuentas:", JSON.stringify(errCuentas, null, 2));
-        setErrorCarga(errCuentas.message || "Error de permisos (RLS) al leer cuentas en Supabase");
-        setCargando(false);
+        setErrorCarga(errCuentas.message || "Error al leer cuentas");
         return;
       }
 
-      // Filtrar únicamente las cuentas que fueron cobradas / cerradas
-      const cuentasRaw = ((dataCuentas || []) as any[]).filter(
-        (c) => c.estado === "CERRADA"
-      ) as (Cuenta & { mesa_id?: string | null })[];
+      // 3. Filtro de fechas (por día de cobro, hora CDMX)
+      const cuentasRaw = ((dataCuentas || []) as CuentaCerrada[]).filter((c) => {
+        const ref = c.cerrada_en || c.abierta_en;
+        if (!ref) return true;
+        const dia = diaDe(ref);
+        if (fechaDesde && dia < fechaDesde) return false;
+        if (fechaHasta && dia > fechaHasta) return false;
+        return true;
+      });
 
       if (cuentasRaw.length === 0) {
         setCuentasCerradas([]);
         setErrorCarga("");
-        setCargando(false);
         return;
       }
 
-      // 3. Cargar pedidos asociados
-      const idsCuentas = cuentasRaw.map((c) => c.id);
-      const resPedidos = await supabase
+      // 4. Pedidos y productos de esas cuentas
+      const { data: dataPedidos } = await supabase
         .from("pedidos")
         .select("*, detalle_pedido(*)")
-        .in("cuenta_id", idsCuentas);
+        .in("cuenta_id", cuentasRaw.map((c) => c.id));
+      const pedidos = (dataPedidos || []) as Pedido[];
 
-      const pedidosList = (resPedidos.data || []) as Pedido[];
+      const completas: CuentaCerrada[] = cuentasRaw
+        .map((c) => ({
+          ...c,
+          mesas: c.mesa_id ? mapaMesas.get(c.mesa_id) ?? null : null,
+          pedidos: pedidos.filter((p) => p.cuenta_id === c.id),
+        }))
+        .sort((a, b) => String(b.cerrada_en || b.abierta_en).localeCompare(String(a.cerrada_en || a.abierta_en)));
 
-      // 4. Vincular mesas y pedidos
-      const cuentasCompletas: Cuenta[] = cuentasRaw.map((c) => ({
-        ...c,
-        mesas: c.mesa_id ? mapaMesas.get(c.mesa_id) ?? null : null,
-        pedidos: pedidosList.filter((p) => p.cuenta_id === c.id),
-      }));
-
-      // 5. Filtrar por rango de fechas solo si el usuario especificó alguna
-      const filtradas = cuentasCompletas.filter((c: any) => {
-        const fechaReferencia = c.cerrada_en || c.abierta_en;
-        if (!fechaReferencia) return true;
-
-        // Día en hora de CDMX (evita que ventas de la noche caigan en el día siguiente)
-        const fechaDia = new Date(fechaReferencia).toLocaleDateString("en-CA", { timeZone: "America/Mexico_City" });
-        if (fechaDesde && fechaDia < fechaDesde) return false;
-        if (fechaHasta && fechaDia > fechaHasta) return false;
-        return true;
-      });
-
-      filtradas.sort((a: any, b: any) =>
-        String(b.cerrada_en || b.abierta_en).localeCompare(String(a.cerrada_en || a.abierta_en))
-      );
-      setCuentasCerradas(filtradas);
+      setCuentasCerradas(completas);
       setErrorCarga("");
-    } catch (err: any) {
-      console.error("Excepción en admin:", err);
-      setErrorCarga(err?.message || "Error al conectar con la base de datos");
+    } catch (err) {
+      setErrorCarga(err instanceof Error ? err.message : "Error al conectar con la base de datos");
     } finally {
       setCargando(false);
     }
@@ -106,37 +118,47 @@ export default function PaginaAdmin() {
     cargarDatos();
   }, [cargarDatos]);
 
-  // Totales
-  const resumen: ResumenVentas = useMemo(() => {
-    let totalIngresos = 0;
-    let totalEfectivo = 0;
-    let totalTarjeta = 0;
-    let totalTransferencia = 0;
+  const totalDe = (c: CuentaCerrada) => Number(c.total_final ?? totalCuenta(c.pedidos));
 
-    cuentasCerradas.forEach((c: any) => {
-      const monto = Number(c.total_final ?? c.total ?? totalCuenta(c.pedidos));
-      totalIngresos += monto;
-
-      const metodo = c.metodo_pago ?? "EFECTIVO";
-      if (metodo === "EFECTIVO") totalEfectivo += monto;
-      else if (metodo === "TARJETA") totalTarjeta += monto;
-      else if (metodo === "TRANSFERENCIA") totalTransferencia += monto;
+  // Totales por método
+  const resumen = useMemo(() => {
+    const r = { total: 0, EFECTIVO: 0, TARJETA: 0, TRANSFERENCIA: 0 };
+    cuentasCerradas.forEach((c) => {
+      const monto = totalDe(c);
+      r.total += monto;
+      const metodo = (c.metodo_pago ?? "EFECTIVO") as keyof typeof r;
+      if (metodo in r && metodo !== "total") r[metodo] += monto;
     });
-
-    return {
-      totalIngresos,
-      totalCuentas: cuentasCerradas.length,
-      totalEfectivo,
-      totalTarjeta,
-      totalTransferencia,
-    };
+    return r;
   }, [cuentasCerradas]);
 
-  const ETIQUETA_METODO: Record<string, string> = {
-    EFECTIVO: "Efectivo",
-    TARJETA: "Tarjeta",
-    TRANSFERENCIA: "Transferencia",
-  };
+  // Productos más vendidos (solo rondas y productos no cancelados)
+  const productos = useMemo(() => {
+    const mapa = new Map<string, ProductoVendido>();
+    cuentasCerradas.forEach((c) =>
+      c.pedidos
+        .filter((p) => p.estado !== "CANCELADO")
+        .forEach((p) =>
+          p.detalle_pedido
+            .filter((d) => d.estado === "ACTIVO")
+            .forEach((d) => {
+              const nombre = `${d.nombre_producto}${d.nombre_opcion ? ` (${d.nombre_opcion})` : ""}`;
+              const previo = mapa.get(nombre) ?? { nombre, unidad: d.unidad, cantidad: 0, importe: 0 };
+              previo.cantidad += Number(d.cantidad);
+              previo.importe += Number(d.importe);
+              mapa.set(nombre, previo);
+            })
+        )
+    );
+    return [...mapa.values()].sort((a, b) =>
+      ordenProductos === "importe" ? b.importe - a.importe : b.cantidad - a.cantidad
+    );
+  }, [cuentasCerradas, ordenProductos]);
+
+  const maxBarra = Math.max(1, ...productos.map((p) => (ordenProductos === "importe" ? p.importe : p.cantidad)));
+  const productosVisibles = verTodos ? productos : productos.slice(0, 10);
+  const cantidadTexto = (p: ProductoVendido) =>
+    p.unidad === "KG" ? `${p.cantidad.toFixed(3)} kg` : `${p.cantidad} pz`;
 
   const hoy = diaMX();
   const rango = (desde: string, hasta: string) => {
@@ -151,6 +173,7 @@ export default function PaginaAdmin() {
     <div className="space-y-6">
       <Conexion conectado={conectado} />
 
+      {/* Encabezado y filtros */}
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <h1 className="font-display text-3xl font-extrabold">Ventas</h1>
@@ -193,26 +216,88 @@ export default function PaginaAdmin() {
         </div>
       )}
 
+      {/* Totales */}
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <div className="rounded-2xl bg-cafe p-5 text-crema">
           <span className="text-sm text-crema/75">Vendido</span>
-          <p className="mt-1 font-display text-3xl font-extrabold tabular-nums">{dinero(resumen.totalIngresos)}</p>
+          <p className="mt-1 font-display text-3xl font-extrabold tabular-nums">{dinero(resumen.total)}</p>
           <span className="text-xs text-crema/60">
-            {resumen.totalCuentas} {resumen.totalCuentas === 1 ? "cuenta cobrada" : "cuentas cobradas"}
+            {cuentasCerradas.length} {cuentasCerradas.length === 1 ? "cuenta cobrada" : "cuentas cobradas"}
           </span>
         </div>
-        {[
-          ["Efectivo", resumen.totalEfectivo],
-          ["Tarjeta", resumen.totalTarjeta],
-          ["Transferencia", resumen.totalTransferencia],
-        ].map(([texto, monto]) => (
-          <div key={texto as string} className="rounded-2xl border border-borde bg-white p-5">
-            <span className="text-sm text-cafe-medio">{texto}</span>
-            <p className="mt-1 font-display text-2xl font-bold tabular-nums">{dinero(monto as number)}</p>
+        {(["EFECTIVO", "TARJETA", "TRANSFERENCIA"] as const).map((m) => (
+          <div key={m} className="rounded-2xl border border-borde bg-white p-5">
+            <span className="text-sm text-cafe-medio">{ETIQUETA_METODO[m]}</span>
+            <p className="mt-1 font-display text-2xl font-bold tabular-nums">{dinero(resumen[m])}</p>
           </div>
         ))}
       </div>
 
+      {/* Productos más vendidos */}
+      <div className="overflow-hidden rounded-2xl border border-borde bg-white">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-borde px-5 py-3">
+          <h2 className="font-display text-lg font-bold">Productos más vendidos</h2>
+          <div className="grid grid-cols-2 gap-1 rounded-lg bg-crema-oscuro p-1 text-sm">
+            {(["importe", "cantidad"] as const).map((o) => (
+              <button
+                key={o}
+                onClick={() => setOrdenProductos(o)}
+                className={`rounded-md px-3 py-1 font-semibold ${
+                  ordenProductos === o ? "bg-white text-cafe shadow-sm" : "text-cafe-medio hover:text-cafe"
+                }`}
+              >
+                {o === "importe" ? "Por dinero" : "Por cantidad"}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {cargando ? (
+          <div className="py-10 text-center text-sm text-cafe-medio">Cargando…</div>
+        ) : productos.length === 0 ? (
+          <div className="py-10 text-center text-sm text-cafe-medio">No hay productos vendidos en este periodo.</div>
+        ) : (
+          <>
+            <ol className="divide-y divide-borde/70">
+              {productosVisibles.map((p, i) => {
+                const valor = ordenProductos === "importe" ? p.importe : p.cantidad;
+                return (
+                  <li key={p.nombre} className="grid grid-cols-[2rem_1fr_auto] items-center gap-3 px-5 py-2.5">
+                    <span className="text-right font-display font-bold text-cafe-medio tabular-nums">{i + 1}</span>
+                    <div className="min-w-0">
+                      <p className="truncate font-semibold">{p.nombre}</p>
+                      <div className="mt-1 h-2 rounded-full bg-crema-oscuro">
+                        <div
+                          className={`h-2 rounded-full ${i === 0 ? "bg-paliacate" : "bg-queso"}`}
+                          style={{ width: `${Math.max(3, (valor / maxBarra) * 100)}%` }}
+                        />
+                      </div>
+                    </div>
+                    <div className="text-right tabular-nums">
+                      <p className="font-display font-bold">
+                        {ordenProductos === "importe" ? dinero(p.importe) : cantidadTexto(p)}
+                      </p>
+                      <p className="text-xs text-cafe-medio">
+                        {ordenProductos === "importe" ? cantidadTexto(p) : dinero(p.importe)}
+                      </p>
+                    </div>
+                  </li>
+                );
+              })}
+            </ol>
+            {productos.length > 10 && (
+              <button
+                onClick={() => setVerTodos((v) => !v)}
+                className="w-full border-t border-borde py-2.5 text-sm font-semibold text-cafe-medio hover:bg-crema/60 hover:text-cafe"
+              >
+                {verTodos ? "Ver solo los 10 primeros" : `Ver los ${productos.length} productos`}
+              </button>
+            )}
+          </>
+        )}
+      </div>
+
+      {/* Cuentas cobradas */}
       <div className="overflow-hidden rounded-2xl border border-borde bg-white">
         <div className="border-b border-borde px-5 py-3">
           <h2 className="font-display text-lg font-bold">Cuentas cobradas ({cuentasCerradas.length})</h2>
@@ -229,30 +314,31 @@ export default function PaginaAdmin() {
                 <tr>
                   <th className="px-5 py-3">Fecha y hora</th>
                   <th className="px-5 py-3">Cuenta</th>
+                  <th className="px-5 py-3">Mesero</th>
                   <th className="px-5 py-3">Método</th>
                   <th className="px-5 py-3">Rondas</th>
                   <th className="px-5 py-3 text-right">Total</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-borde/70">
-                {cuentasCerradas.map((c: any) => {
-                  const fechaStr = c.cerrada_en || c.abierta_en;
-                  const fechaFormateada = fechaStr
-                    ? new Date(fechaStr).toLocaleString("es-MX", {
+                {cuentasCerradas.map((c) => {
+                  const fecha = c.cerrada_en || c.abierta_en;
+                  const fechaFormateada = fecha
+                    ? new Date(fecha).toLocaleString("es-MX", {
                         timeZone: "America/Mexico_City",
                         dateStyle: "short",
                         timeStyle: "short",
                         hour12: true,
                       })
-                    : diaMX();
-
-                  const total = Number(c.total_final ?? c.total ?? totalCuenta(c.pedidos));
+                    : "—";
                   const metodo = c.metodo_pago ?? "EFECTIVO";
+                  const mesero = c.mesero_id ? nombres.get(c.mesero_id) ?? "Usuario eliminado" : "—";
 
                   return (
                     <tr key={c.id} className="hover:bg-crema/50">
                       <td className="whitespace-nowrap px-5 py-3 tabular-nums text-cafe-medio">{fechaFormateada}</td>
                       <td className="px-5 py-3 font-semibold">{nombreCuenta(c)}</td>
+                      <td className="px-5 py-3">{mesero}</td>
                       <td className="px-5 py-3">
                         <span className="rounded-full bg-crema-oscuro px-2.5 py-0.5 text-xs font-semibold">
                           {ETIQUETA_METODO[metodo] ?? metodo}
@@ -260,7 +346,7 @@ export default function PaginaAdmin() {
                       </td>
                       <td className="px-5 py-3 tabular-nums">{c.pedidos?.length || 0}</td>
                       <td className="whitespace-nowrap px-5 py-3 text-right font-display font-bold tabular-nums">
-                        {dinero(total)}
+                        {dinero(totalDe(c))}
                       </td>
                     </tr>
                   );
