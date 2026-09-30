@@ -15,7 +15,7 @@ export default function Encabezado({ titulo, perfil }: { titulo: string; perfil:
 
   return (
     <header className="bg-cafe text-crema print:hidden">
-      <div className="mx-auto flex w-full max-w-6xl flex-wrap items-center justify-between gap-3 px-4 py-3">
+      <div className="mx-auto flex w-full max-w-6xl flex-wrap items-center gap-x-6 gap-y-3 px-4 py-3">
         <div className="flex items-center gap-3">
           <Image
             src="/logo.png"
@@ -30,20 +30,28 @@ export default function Encabezado({ titulo, perfil }: { titulo: string; perfil:
             <p className="text-sm text-crema/70">{perfil.nombre}</p>
           </div>
         </div>
-        <nav className="flex flex-wrap items-center gap-2">
-          {enlaces.map(([href, texto]) => (
-            <Link
-              key={href}
-              href={href}
-              className={`rounded-full px-3.5 py-1.5 text-sm font-medium transition-colors ${
-                esActual(texto) ? "bg-queso text-cafe" : "text-crema/85 hover:bg-crema/10"
-              }`}
-            >
-              {texto}
-            </Link>
-          ))}
-          <BotonSalir />
-        </nav>
+
+        {/* En celular esta fila ocupa todo el ancho: pantallas a la izquierda, salir a la derecha */}
+        <div className="flex w-full items-center gap-2 sm:ml-auto sm:w-auto">
+          {enlaces.length > 0 && (
+            <nav className="flex flex-wrap items-center gap-2">
+              {enlaces.map(([href, texto]) => (
+                <Link
+                  key={href}
+                  href={href}
+                  className={`rounded-full px-4 py-2 text-sm font-medium transition-colors ${
+                    esActual(texto) ? "bg-queso text-cafe" : "text-crema/85 hover:bg-crema/10"
+                  }`}
+                >
+                  {texto}
+                </Link>
+              ))}
+            </nav>
+          )}
+          <div className="ml-auto flex items-center sm:ml-6 sm:border-l sm:border-crema/20 sm:pl-6">
+            <BotonSalir />
+          </div>
+        </div>
       </div>
       <div className="paliacate h-2" aria-hidden />
     </header>
