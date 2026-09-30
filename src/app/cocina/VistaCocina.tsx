@@ -13,7 +13,6 @@ export default function VistaCocina() {
   const [pedidos, setPedidos] = useState<Pedido[]>([]);
   const [ahora, setAhora] = useState(Date.now());
   const [ticketActual, setTicketActual] = useState<Pedido | null>(null);
-  const [impresionActiva, setImpresionActiva] = useState(false);
 
   // Registro de rondas para controlar qué se imprime
   const idsProcesadosRef = useRef<Set<string>>(new Set());
@@ -54,7 +53,6 @@ export default function VistaCocina() {
 
   const conectado = useTiempoReal("cocina", ["pedidos", "detalle_pedido"], cargar);
 
-  // Efecto que ejecuta la impresión
   // El ticket no se borra al imprimir (en celulares window.print() no espera);
   // se reemplaza por el siguiente de la cola.
   useEffect(() => {
@@ -112,27 +110,11 @@ export default function VistaCocina() {
     <main className="mx-auto w-full max-w-6xl space-y-4 p-4">
       <Conexion conectado={conectado} />
 
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b pb-3">
-        <div>
-          <h1 className="text-2xl font-bold">Cocina</h1>
-          <span className="text-sm text-slate-500">
-            {pedidos.length} {pedidos.length === 1 ? "pedido pendiente" : "pedidos pendientes"}
-          </span>
-        </div>
-
-        {!impresionActiva ? (
-          <button
-            onClick={() => setImpresionActiva(true)}
-            className="rounded-lg bg-orange-600 px-4 py-2 text-sm font-semibold text-white shadow hover:bg-orange-700"
-          >
-            🔔 Activar auto-impresión y alertas
-          </button>
-        ) : (
-          <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-3 py-1 text-xs font-medium text-emerald-700">
-            <span className="h-2 w-2 rounded-full bg-emerald-500" />
-            Auto-impresión lista
-          </span>
-        )}
+      <div className="border-b pb-3">
+        <h1 className="text-2xl font-bold">Cocina</h1>
+        <span className="text-sm text-slate-500">
+          {pedidos.length} {pedidos.length === 1 ? "pedido pendiente" : "pedidos pendientes"}
+        </span>
       </div>
 
       {pedidos.length === 0 ? (
