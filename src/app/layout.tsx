@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Bitter, Work_Sans } from "next/font/google";
 import "./globals.css";
 
@@ -16,6 +16,13 @@ const work = Work_Sans({
 export const metadata: Metadata = {
   title: "Los Menonitas",
   description: "Pedidos, cocina y caja",
+  manifest: "/manifest.webmanifest",
+  icons: { icon: "/icono-192.png", apple: "/apple-touch-icon.png" },
+  appleWebApp: { capable: true, title: "Menonitas", statusBarStyle: "default" },
+};
+
+export const viewport: Viewport = {
+  themeColor: "#4a2e1c",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

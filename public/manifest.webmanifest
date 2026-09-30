@@ -1,0 +1,16 @@
+{
+  "name": "Los Menonitas",
+  "short_name": "Menonitas",
+  "description": "Pedidos, cocina y caja",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#fff1da",
+  "theme_color": "#4a2e1c",
+  "lang": "es-MX",
+  "icons": [
+    { "src": "/icono-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icono-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "/icono-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

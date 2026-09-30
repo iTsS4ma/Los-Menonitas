@@ -6,6 +6,7 @@ import { useTiempoReal } from "@/hooks/useTiempoReal";
 import { crearClienteNavegador } from "@/lib/supabase/client";
 import { cantidadTexto, diaMX, minutosDesde, nombreCuenta } from "@/lib/formato";
 import type { Pedido } from "@/lib/tipos";
+import { avisarPedidoListo } from "./acciones";
 
 export default function VistaCocina() {
   const supabase = useMemo(() => crearClienteNavegador(), []);
@@ -102,6 +103,9 @@ export default function VistaCocina() {
       alert(`Error al guardar en base de datos: ${errListo.message}`);
       await cargar();
     }
+
+    // Aviso push a los meseros (si falla, no bloquea a cocina)
+    if (!errListo) avisarPedidoListo(pedido.id).catch((e) => console.error("Aviso push:", e));
   }
 
   return (

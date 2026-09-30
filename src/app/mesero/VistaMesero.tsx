@@ -4,6 +4,7 @@ import { generarUUID } from "@/lib/formato";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import Conexion from "@/components/Conexion";
+import BotonNotificaciones from "@/components/BotonNotificaciones";
 import { useTiempoReal } from "@/hooks/useTiempoReal";
 import { crearClienteNavegador } from "@/lib/supabase/client";
 import { cantidadTexto, dinero, errorTexto, nombreCuenta, totalCuenta } from "@/lib/formato";
@@ -52,7 +53,7 @@ function horaActualMX() {
   }).format(new Date());
 }
 
-export default function VistaMesero({ perfil }: { perfil: Perfil }) {
+export default function VistaMesero({ perfil, cuentaInicial = null }: { perfil: Perfil; cuentaInicial?: string | null }) {
   const supabase = useMemo(() => crearClienteNavegador(), []);
   const [mesas, setMesas] = useState<Mesa[]>([]);
   const [cuentas, setCuentas] = useState<Cuenta[]>([]);
@@ -60,7 +61,7 @@ export default function VistaMesero({ perfil }: { perfil: Perfil }) {
   const [productos, setProductos] = useState<Producto[]>([]);
   const [opciones, setOpciones] = useState<Opcion[]>([]);
   const [pestana, setPestana] = useState<"MESAS" | "LLEVAR">("MESAS");
-  const [cuentaId, setCuentaId] = useState<string | null>(null);
+  const [cuentaId, setCuentaId] = useState<string | null>(cuentaInicial);
   const [capturando, setCapturando] = useState(false);
   const [aviso, setAviso] = useState("");
   const [solicitandoCuenta, setSolicitandoCuenta] = useState(false);
@@ -488,6 +489,8 @@ export default function VistaMesero({ perfil }: { perfil: Perfil }) {
       {aviso && (
         <p className="rounded-xl bg-paliacate-claro px-3 py-2.5 text-sm font-medium text-paliacate-oscuro">{aviso}</p>
       )}
+
+      <BotonNotificaciones />
 
       <div className="grid grid-cols-2 gap-1 rounded-2xl bg-crema-oscuro p-1">
         {(["MESAS", "LLEVAR"] as const).map((p) => (
