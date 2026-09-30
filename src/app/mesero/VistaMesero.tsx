@@ -276,7 +276,7 @@ export default function VistaMesero({ perfil, cuentaInicial = null }: { perfil: 
         <Conexion conectado={conectado} />
         <button
           onClick={() => setCuentaId(null)}
-          className="flex w-full items-center justify-center gap-2 rounded-xl border-2 border-cafe bg-white py-3.5 text-base font-semibold active:scale-[0.99] active:bg-crema-oscuro"
+          className="flex w-full items-center justify-left gap-2 rounded-xl border-2 border-cafe bg-white py-3.5 text-base font-semibold active:scale-[0.99] active:bg-crema-oscuro"
         >
           <span aria-hidden className="text-xl leading-none">‹</span> Mesas
         </button>
