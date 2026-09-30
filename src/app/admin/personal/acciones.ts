@@ -21,10 +21,16 @@ export async function crearPersonal(datos: {
   const { data, error } = await admin.auth.admin.createUser({ email, password: datos.password, email_confirm: true });
   if (error || !data.user) return { ok: false, error: error?.message ?? "No se pudo crear el usuario" };
 
-  const { error: e2 } = await admin.from("usuarios").insert({
-    id: data.user.id, nombre, email, rol: datos.rol,
-    puede_cobrar: datos.rol === "ADMIN" || datos.rol === "CAJERO" ? true : datos.puede_cobrar,
-  });
+  // El trigger de la base (trigger_nuevo_usuario) ya creó la fila en "usuarios".
+  // Se usa upsert para sobrescribirla con el nombre, rol y permiso elegidos aquí.
+  const { error: e2 } = await admin.from("usuarios").upsert(
+    {
+      id: data.user.id, nombre, email, rol: datos.rol,
+      puede_cobrar: datos.rol === "ADMIN" || datos.rol === "CAJERO" ? true : datos.puede_cobrar,
+      activo: true,
+    },
+    { onConflict: "id" }
+  );
   if (e2) {
     await admin.auth.admin.deleteUser(data.user.id); // no dejar usuarios a medias
     return { ok: false, error: e2.message };
