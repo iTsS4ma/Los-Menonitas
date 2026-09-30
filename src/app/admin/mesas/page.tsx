@@ -44,29 +44,66 @@ export default function MesasPage() {
     await ejecutar(supabase.from("mesas").insert(Array.from({ length: n }, (_, i) => ({ numero: ultimo + i + 1 }))));
   }
 
+  const activas = mesas.filter((m) => m.activa).length;
+  const campo = "block w-28 rounded-xl border border-borde bg-white px-3 py-2.5 focus:border-cafe focus:outline-none";
+
   return (
-    <div className="space-y-4">
-      <h2 className="text-xl font-semibold">Mesas</h2>
-      {error && <p className="rounded bg-rose-50 p-2 text-sm text-rose-700">{error}</p>}
-      <div className="flex flex-wrap items-end gap-2">
-        <label className="text-sm">Número<input inputMode="numeric" value={numero} onChange={(e) => setNumero(e.target.value)} className="block w-24 rounded border px-2 py-2" /></label>
-        <label className="text-sm">Personas<input inputMode="numeric" value={capacidad} onChange={(e) => setCapacidad(e.target.value)} className="block w-24 rounded border px-2 py-2" /></label>
-        <button onClick={agregar} disabled={!(Number(numero) > 0)} className="rounded bg-orange-600 hover:bg-orange-700 px-4 py-2 text-white disabled:opacity-40">Agregar</button>
-        <button onClick={agregarVarias} className="rounded border px-4 py-2">Agregar varias</button>
+    <div className="space-y-6">
+      <div>
+        <h1 className="font-display text-3xl font-extrabold">Mesas</h1>
+        <p className="text-sm text-cafe-medio">
+          {activas} {activas === 1 ? "mesa activa" : "mesas activas"}. Las mesas no se borran para no perder su historial; desactívalas.
+        </p>
       </div>
-      <ul className="divide-y">
-        {mesas.map((m) => (
-          <li key={m.id} className="flex items-center justify-between py-2">
-            <span className={m.activa ? "" : "text-slate-400"}>
-              Mesa {m.numero}{m.capacidad ? ` · ${m.capacidad} personas` : ""}{m.activa ? "" : " (inactiva)"}
-            </span>
-            <button onClick={() => ejecutar(supabase.from("mesas").update({ activa: !m.activa }).eq("id", m.id))} className="rounded border px-3 py-1 text-sm">
-              {m.activa ? "Desactivar" : "Activar"}
-            </button>
-          </li>
-        ))}
-      </ul>
-      <p className="text-sm text-slate-600">Las mesas no se borran para no perder su historial; desactívalas.</p>
+
+      {error && <p className="rounded-xl bg-paliacate-claro px-4 py-3 text-sm text-paliacate-oscuro">{error}</p>}
+
+      <div className="flex flex-wrap items-end gap-3 rounded-2xl border border-borde bg-white p-4">
+        <label className="text-sm font-semibold">
+          Número
+          <input inputMode="numeric" value={numero} onChange={(e) => setNumero(e.target.value)} className={`mt-1 ${campo}`} />
+        </label>
+        <label className="text-sm font-semibold">
+          Personas
+          <input inputMode="numeric" value={capacidad} onChange={(e) => setCapacidad(e.target.value)} className={`mt-1 ${campo}`} />
+        </label>
+        <button
+          onClick={agregar}
+          disabled={!(Number(numero) > 0)}
+          className="rounded-xl bg-paliacate px-5 py-2.5 font-semibold text-white hover:bg-paliacate-oscuro disabled:opacity-40"
+        >
+          Agregar mesa
+        </button>
+        <button onClick={agregarVarias} className="rounded-xl border-2 border-borde px-5 py-2 font-semibold hover:border-cafe-medio">
+          Agregar varias
+        </button>
+      </div>
+
+      {mesas.length === 0 ? (
+        <p className="rounded-2xl border-2 border-dashed border-borde px-4 py-10 text-center text-cafe-medio">
+          Aún no hay mesas. Usa <strong>Agregar varias</strong> para crearlas de una vez.
+        </p>
+      ) : (
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-6">
+          {mesas.map((m) => (
+            <div
+              key={m.id}
+              className={`flex flex-col items-center rounded-2xl border-2 bg-white p-4 ${m.activa ? "border-borde" : "border-dashed border-borde opacity-60"}`}
+            >
+              <span className="font-display text-4xl font-extrabold leading-none">{m.numero}</span>
+              <span className="mt-1 text-xs text-cafe-medio">
+                {m.activa ? (m.capacidad ? `${m.capacidad} personas` : "Activa") : "Inactiva"}
+              </span>
+              <button
+                onClick={() => ejecutar(supabase.from("mesas").update({ activa: !m.activa }).eq("id", m.id))}
+                className="mt-3 w-full rounded-lg border border-borde py-1.5 text-xs font-semibold hover:border-cafe-medio"
+              >
+                {m.activa ? "Desactivar" : "Activar"}
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

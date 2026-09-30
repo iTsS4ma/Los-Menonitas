@@ -35,6 +35,14 @@ const ETIQUETA_PEDIDO: Record<string, string> = {
   CANCELADO: "Cancelado",
 };
 
+const ESTILO_ESTADO: Record<string, string> = {
+  ENVIADO: "bg-queso-claro text-cafe",
+  PREPARANDO: "bg-queso text-cafe",
+  LISTO: "bg-hoja text-white",
+  ENTREGADO: "bg-crema-oscuro text-cafe-medio",
+  CANCELADO: "bg-paliacate-claro text-paliacate-oscuro",
+};
+
 function horaActualMX() {
   return new Intl.DateTimeFormat("es-MX", {
     timeZone: "America/Mexico_City",
@@ -263,133 +271,157 @@ export default function VistaMesero({ perfil }: { perfil: Perfil }) {
     const puedePedirCuenta = cuenta.estado === "ABIERTA" && total > 0 && !hayPendientes && !solicitandoCuenta;
 
     return (
-      <main className="mx-auto w-full max-w-2xl space-y-4 p-3">
+      <main className="mx-auto w-full max-w-2xl space-y-4 px-3 pb-8 pt-3">
         <Conexion conectado={conectado} />
-        <button onClick={() => setCuentaId(null)} className="text-sm underline">
-          Volver
+        <button
+          onClick={() => setCuentaId(null)}
+          className="inline-flex items-center gap-1 rounded-full px-2 py-1 text-sm font-semibold text-cafe-medio hover:bg-crema-oscuro"
+        >
+          ‹ Mesas
         </button>
-        <div className="flex items-baseline justify-between">
-          <h2 className="text-2xl font-semibold">{nombreCuenta(cuenta)}</h2>
-          <span className="text-2xl font-semibold">{dinero(total)}</span>
+
+        <div className="flex items-end justify-between rounded-2xl border border-borde bg-white px-4 py-4">
+          <div>
+            <h2 className="font-display text-3xl font-extrabold leading-none">{nombreCuenta(cuenta)}</h2>
+            <p className="mt-1 text-sm text-cafe-medio">
+              {rondas.length} {rondas.length === 1 ? "ronda" : "rondas"}
+            </p>
+          </div>
+          <span className="font-display text-3xl font-bold">{dinero(total)}</span>
         </div>
+
         {cuenta.estado === "CUENTA_SOLICITADA" && (
-          <p className="rounded bg-amber-50 p-2 text-sm text-amber-800 font-medium">
-            🔔 Cuenta solicitada a caja. Si piden algo más, se reabre automáticamente.
+          <p className="rounded-xl bg-queso-claro px-3 py-2.5 text-sm font-medium text-cafe">
+            Cuenta solicitada a caja. Si piden algo más, se reabre automáticamente.
           </p>
         )}
-        {aviso && <p className="rounded bg-rose-50 p-2 text-sm text-rose-700 font-medium">{aviso}</p>}
+        {aviso && (
+          <p className="rounded-xl bg-paliacate-claro px-3 py-2.5 text-sm font-medium text-paliacate-oscuro">{aviso}</p>
+        )}
 
-        {rondas.length === 0 && <p className="text-slate-600">Sin productos todavía.</p>}
+        {rondas.length === 0 && (
+          <p className="rounded-2xl border-2 border-dashed border-borde px-4 py-8 text-center text-cafe-medio">
+            Sin productos todavía. Toca <strong>Agregar productos</strong> para empezar.
+          </p>
+        )}
+
         {rondas.map((p) => {
           const estadoNorm = String(p.estado || "").toUpperCase().trim();
           return (
-            <section key={p.id} className="rounded border p-3">
-              <div className="mb-2 flex items-center justify-between">
-                <strong>Ronda {p.numero_ronda}</strong>
-                <span className={estadoNorm === "LISTO" ? "font-bold text-emerald-700" : "text-sm text-slate-600"}>
+            <section
+              key={p.id}
+              className={`rounded-2xl border bg-white p-4 ${
+                estadoNorm === "LISTO" ? "border-hoja ring-2 ring-hoja/30" : "border-borde"
+              }`}
+            >
+              <div className="mb-3 flex items-center justify-between">
+                <strong className="font-display text-lg">Ronda {p.numero_ronda}</strong>
+                <span className={`rounded-full px-3 py-1 text-xs font-bold ${ESTILO_ESTADO[estadoNorm] ?? "bg-crema-oscuro text-cafe"}`}>
                   {ETIQUETA_PEDIDO[estadoNorm] || p.estado}
                 </span>
               </div>
-              <ul className="space-y-1">
-                {(p.detalle_pedido || []).map((d) => (
-                  <li
-                    key={d.id}
-                    className={`flex items-start justify-between gap-2 ${
-                      d.estado === "CANCELADO" || estadoNorm === "CANCELADO" ? "text-slate-400 line-through" : ""
-                    }`}
-                  >
-                    <span>
-                      {cantidadTexto(d)} {d.nombre_producto}
-                      {d.nombre_opcion ? ` (${d.nombre_opcion})` : ""}
-                      {d.notas ? <em className="block text-xs text-slate-600">{d.notas}</em> : null}
-                    </span>
-                    <span className="flex items-center gap-2">
-                      {dinero(d.importe)}
-                      {d.estado === "ACTIVO" &&
-                        estadoNorm !== "CANCELADO" &&
-                        (perfil.rol === "ADMIN" || ["ENVIADO", "PREPARANDO"].includes(estadoNorm)) && (
-                          <button
-                            className="text-xs text-rose-600 underline font-semibold"
-                            onClick={() => cancelarItemIndividual(d, p)}
-                          >
-                            Quitar
-                          </button>
-                        )}
-                    </span>
-                  </li>
-                ))}
+              <ul className="space-y-2">
+                {(p.detalle_pedido || []).map((d) => {
+                  const tachado = d.estado === "CANCELADO" || estadoNorm === "CANCELADO";
+                  return (
+                    <li key={d.id} className={`flex items-start justify-between gap-3 ${tachado ? "text-cafe/40 line-through" : ""}`}>
+                      <span className="min-w-0">
+                        <span className="font-semibold">{cantidadTexto(d)}</span> {d.nombre_producto}
+                        {d.nombre_opcion ? ` (${d.nombre_opcion})` : ""}
+                        {d.notas ? <em className="block text-xs text-cafe-medio">{d.notas}</em> : null}
+                      </span>
+                      <span className="flex shrink-0 items-center gap-3">
+                        <span className="tabular-nums">{dinero(d.importe)}</span>
+                        {d.estado === "ACTIVO" &&
+                          estadoNorm !== "CANCELADO" &&
+                          (perfil.rol === "ADMIN" || ["ENVIADO", "PREPARANDO"].includes(estadoNorm)) && (
+                            <button
+                              className="rounded-lg px-2 py-1 text-xs font-semibold text-paliacate hover:bg-paliacate-claro"
+                              onClick={() => cancelarItemIndividual(d, p)}
+                            >
+                              Quitar
+                            </button>
+                          )}
+                      </span>
+                    </li>
+                  );
+                })}
               </ul>
-              <div className="mt-2 flex gap-2">
-                {estadoNorm === "LISTO" && (
-                  <button
-                    className="flex-1 rounded bg-emerald-600 hover:bg-emerald-700 py-3 text-white font-semibold shadow"
-                    onClick={() =>
-                      ejecutar(() => supabase.from("pedidos").update({ estado: "ENTREGADO" }).eq("id", p.id))
-                    }
-                  >
-                    Marcar entregado
-                  </button>
-                )}
-                {["ENVIADO", "PREPARANDO"].includes(estadoNorm) && (
-                  <button
-                    className="rounded border px-3 py-2 text-sm text-rose-600 font-semibold"
-                    onClick={() => cancelarRondaCompleta(p)}
-                  >
-                    Cancelar ronda
-                  </button>
-                )}
-              </div>
+              {(estadoNorm === "LISTO" || ["ENVIADO", "PREPARANDO"].includes(estadoNorm)) && (
+                <div className="mt-4 flex gap-2">
+                  {estadoNorm === "LISTO" && (
+                    <button
+                      className="flex-1 rounded-xl bg-hoja py-3.5 text-lg font-semibold text-white shadow-sm active:scale-[0.99]"
+                      onClick={() =>
+                        ejecutar(() => supabase.from("pedidos").update({ estado: "ENTREGADO" }).eq("id", p.id))
+                      }
+                    >
+                      Marcar entregado
+                    </button>
+                  )}
+                  {["ENVIADO", "PREPARANDO"].includes(estadoNorm) && (
+                    <button
+                      className="rounded-xl border border-paliacate/40 px-4 py-2.5 text-sm font-semibold text-paliacate hover:bg-paliacate-claro"
+                      onClick={() => cancelarRondaCompleta(p)}
+                    >
+                      Cancelar ronda
+                    </button>
+                  )}
+                </div>
+              )}
             </section>
           );
         })}
 
-        <div className="grid gap-2">
+        <div className="grid gap-3 pt-2">
           <button
-            className="rounded bg-orange-600 hover:bg-orange-700 py-4 text-lg text-white font-semibold"
+            className="rounded-xl bg-paliacate py-4 text-lg font-semibold text-white shadow-sm transition-colors hover:bg-paliacate-oscuro active:scale-[0.99]"
             onClick={() => setCapturando(true)}
           >
             Agregar productos
           </button>
 
-          {/* Bloque estricto para pedir la cuenta */}
           {cuenta.estado === "ABIERTA" && total > 0 && (
-            <div className="space-y-1">
+            <div className="space-y-1.5">
               <button
                 disabled={!puedePedirCuenta}
-                className={`w-full rounded border py-3 font-semibold transition ${
+                className={`w-full rounded-xl py-3.5 font-semibold transition-colors ${
                   puedePedirCuenta
-                    ? "bg-amber-500 hover:bg-amber-600 text-white border-amber-600 cursor-pointer shadow-sm"
-                    : "bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed"
+                    ? "bg-cafe text-crema hover:bg-cafe/90"
+                    : "cursor-not-allowed bg-crema-oscuro text-cafe/50"
                 }`}
                 onClick={pedirCuentaSegura}
               >
                 {solicitandoCuenta
-                  ? "Verificando..."
+                  ? "Verificando…"
                   : tieneEnPreparacion
-                  ? "⏳ Cocina preparando platillos..."
+                  ? "Cocina preparando platillos…"
                   : tieneListosPorEntregar
-                  ? "⏳ Entrega los platillos listos primero"
+                  ? "Entrega los platillos listos primero"
                   : "Pedir la cuenta"}
               </button>
               {hayPendientes && (
-                <p className="text-center text-xs text-amber-700 font-medium">
+                <p className="text-center text-xs font-medium text-cafe-medio">
                   {tieneEnPreparacion
                     ? "Hay platillos en preparación en cocina."
-                    : "Hay platillos listos en barra sin marcar como entregados."}
+                    : "Hay platillos listos sin marcar como entregados."}
                 </p>
               )}
             </div>
           )}
 
           {(perfil.puede_cobrar || perfil.rol === "ADMIN") && total > 0 && (
-            <Link href={`/caja?cuenta=${cuenta.id}`} className="rounded border py-3 text-center font-medium">
+            <Link
+              href={`/caja?cuenta=${cuenta.id}`}
+              className="rounded-xl border-2 border-cafe py-3 text-center font-semibold hover:bg-crema-oscuro"
+            >
               Cobrar
             </Link>
           )}
 
           {(total === 0 || perfil.rol === "ADMIN") && (
             <button
-              className="py-2 text-sm text-rose-600 underline"
+              className="py-2 text-sm font-medium text-paliacate underline-offset-4 hover:underline"
               onClick={async () => {
                 if (!window.confirm("¿Cancelar la cuenta completa?")) return;
                 if (
@@ -451,16 +483,19 @@ export default function VistaMesero({ perfil }: { perfil: Perfil }) {
     });
 
   return (
-    <main className="mx-auto w-full max-w-3xl space-y-3 p-3">
+    <main className="mx-auto w-full max-w-3xl space-y-4 px-3 pb-8 pt-3">
       <Conexion conectado={conectado} />
-      {aviso && <p className="rounded bg-rose-50 p-2 text-sm text-rose-700">{aviso}</p>}
-      <div className="grid grid-cols-2 gap-2">
+      {aviso && (
+        <p className="rounded-xl bg-paliacate-claro px-3 py-2.5 text-sm font-medium text-paliacate-oscuro">{aviso}</p>
+      )}
+
+      <div className="grid grid-cols-2 gap-1 rounded-2xl bg-crema-oscuro p-1">
         {(["MESAS", "LLEVAR"] as const).map((p) => (
           <button
             key={p}
             onClick={() => setPestana(p)}
-            className={`rounded py-3 ${
-              pestana === p ? "bg-orange-600 hover:bg-orange-700 text-white font-medium" : "border"
+            className={`rounded-xl py-3 font-semibold transition-colors ${
+              pestana === p ? "bg-white text-cafe shadow-sm" : "text-cafe-medio"
             }`}
           >
             {p === "MESAS" ? "Mesas" : `Para llevar (${paraLlevar.length})`}
@@ -470,75 +505,104 @@ export default function VistaMesero({ perfil }: { perfil: Perfil }) {
 
       {pestana === "MESAS" ? (
         mesas.length === 0 ? (
-          <p className="text-slate-600">No hay mesas. Dalas de alta en Admin → Mesas.</p>
+          <p className="rounded-2xl border-2 border-dashed border-borde px-4 py-8 text-center text-cafe-medio">
+            No hay mesas. Dalas de alta en Admin → Mesas.
+          </p>
         ) : (
-          <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
-            {mesas.map((m) => {
-              const c = cuentas.find((x) => x.mesa_id === m.id);
-              const listo = tieneListo(c);
-              const enCocina = tieneEnCocina(c);
-              return (
-                <button
-                  key={m.id}
-                  onClick={() => abrirMesa(m)}
-                  className={`relative flex aspect-square flex-col items-center justify-center rounded border-2 ${
-                    listo
-                      ? "border-emerald-600 bg-emerald-50"
-                      : enCocina
-                      ? "border-amber-500 bg-amber-50"
-                      : c
-                      ? "border-orange-600 bg-slate-100"
-                      : "border-slate-200"
-                  }`}
-                >
-                  {listo && enCocina && (
-                    <span
-                      className="absolute top-1 right-1 h-2.5 w-2.5 rounded-full bg-amber-500 ring-2 ring-white"
-                      title="Ronda en cocina pendiente"
-                    />
-                  )}
-                  <span className="text-2xl font-semibold">{m.numero}</span>
-                  <span className="text-xs font-medium">
-                    {listo
-                      ? enCocina
-                        ? "¡Listo! (+ Cocina)"
-                        : "¡Listo!"
-                      : enCocina
-                      ? "En cocina"
-                      : c
-                      ? c.estado === "CUENTA_SOLICITADA"
-                        ? "Cuenta"
-                        : dinero(totalCuenta(c.pedidos))
-                      : "Libre"}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
+          <>
+            <div className="grid grid-cols-3 gap-3 sm:grid-cols-4">
+              {mesas.map((m) => {
+                const c = cuentas.find((x) => x.mesa_id === m.id);
+                const listo = tieneListo(c);
+                const enCocina = tieneEnCocina(c);
+                const pidioCuenta = c?.estado === "CUENTA_SOLICITADA";
+                const estilo = listo
+                  ? "border-hoja bg-hoja text-white"
+                  : enCocina
+                  ? "border-queso bg-queso-claro text-cafe"
+                  : pidioCuenta
+                  ? "border-paliacate bg-paliacate-claro text-cafe"
+                  : c
+                  ? "border-cafe bg-white text-cafe"
+                  : "border-borde bg-white/60 text-cafe/50";
+                return (
+                  <button
+                    key={m.id}
+                    onClick={() => abrirMesa(m)}
+                    className={`relative flex aspect-square flex-col items-center justify-center rounded-2xl border-2 transition-transform active:scale-95 ${estilo}`}
+                  >
+                    {listo && enCocina && (
+                      <span
+                        className="absolute right-2 top-2 h-3 w-3 rounded-full bg-queso ring-2 ring-white"
+                        title="Otra ronda sigue en cocina"
+                      />
+                    )}
+                    <span className="font-display text-4xl font-extrabold leading-none">{m.numero}</span>
+                    <span className="mt-1.5 text-xs font-semibold">
+                      {listo
+                        ? enCocina
+                          ? "¡Listo! + cocina"
+                          : "¡Listo!"
+                        : enCocina
+                        ? "En cocina"
+                        : c
+                        ? pidioCuenta
+                          ? "Cuenta"
+                          : dinero(totalCuenta(c.pedidos))
+                        : "Libre"}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="flex flex-wrap gap-x-4 gap-y-1.5 px-1 text-xs text-cafe-medio">
+              <Leyenda color="bg-white border-2 border-borde" texto="Libre" />
+              <Leyenda color="bg-white border-2 border-cafe" texto="Abierta" />
+              <Leyenda color="bg-queso" texto="En cocina" />
+              <Leyenda color="bg-hoja" texto="Listo para llevar" />
+              <Leyenda color="bg-paliacate" texto="Pidió cuenta" />
+            </div>
+          </>
         )
       ) : (
-        <div className="space-y-2">
+        <div className="space-y-3">
           <button
             onClick={nuevaParaLlevar}
-            className="w-full rounded bg-orange-600 hover:bg-orange-700 py-4 text-lg text-white font-medium"
+            className="w-full rounded-xl bg-paliacate py-4 text-lg font-semibold text-white shadow-sm transition-colors hover:bg-paliacate-oscuro"
           >
             Nueva orden para llevar
           </button>
-          {paraLlevar.map((c) => (
-            <button
-              key={c.id}
-              onClick={() => setCuentaId(c.id)}
-              className={`flex w-full justify-between rounded border-2 p-3 ${
-                tieneListo(c) ? "border-emerald-600 bg-emerald-50" : ""
-              }`}
-            >
-              <span>{nombreCuenta(c)}</span>
-              <span>{tieneListo(c) ? "¡Listo!" : dinero(totalCuenta(c.pedidos))}</span>
-            </button>
-          ))}
+          {paraLlevar.length === 0 && (
+            <p className="py-6 text-center text-sm text-cafe-medio">No hay órdenes para llevar abiertas.</p>
+          )}
+          {paraLlevar.map((c) => {
+            const listo = tieneListo(c);
+            return (
+              <button
+                key={c.id}
+                onClick={() => setCuentaId(c.id)}
+                className={`flex w-full items-center justify-between rounded-2xl border-2 px-4 py-4 text-left ${
+                  listo ? "border-hoja bg-hoja text-white" : "border-borde bg-white"
+                }`}
+              >
+                <span className="font-display text-lg font-bold">{nombreCuenta(c)}</span>
+                <span className="font-semibold">{listo ? "¡Listo!" : dinero(totalCuenta(c.pedidos))}</span>
+              </button>
+            );
+          })}
         </div>
       )}
     </main>
+  );
+}
+
+function Leyenda({ color, texto }: { color: string; texto: string }) {
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      <span className={`h-3 w-3 rounded ${color}`} />
+      {texto}
+    </span>
   );
 }
 
@@ -599,6 +663,10 @@ function Captura({
     l.monto ?? Math.round((l.cantidad ?? 0) * Number(l.producto.precio) * 100) / 100;
   const total = lineas.reduce((s, l) => s + importeLinea(l), 0);
 
+  // Cuántas piezas de cada producto van en la ronda (para mostrarlo sobre el botón)
+  const enRonda = (id: string) =>
+    lineas.filter((l) => l.producto.id === id).reduce((s, l) => s + (l.producto.unidad === "PIEZA" ? l.cantidad ?? 0 : 1), 0);
+
   async function enviar() {
     setEnviando(true);
     setError("");
@@ -616,24 +684,24 @@ function Captura({
   }
 
   return (
-    <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col p-3">
-      <div className="mb-2 flex items-center justify-between">
+    <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col px-3 pt-3">
+      <div className="mb-3 flex items-center justify-between">
         <button
           onClick={() => (!lineas.length || window.confirm("¿Descartar esta ronda?")) && onCancelar()}
-          className="text-sm underline"
+          className="rounded-full px-2 py-1 text-sm font-semibold text-cafe-medio hover:bg-crema-oscuro"
         >
-          Cancelar
+          ‹ Cancelar
         </button>
-        <strong>{nombreCuenta(cuenta)}</strong>
+        <strong className="font-display text-xl">{nombreCuenta(cuenta)}</strong>
       </div>
 
-      <div className="mb-2 flex gap-2 overflow-x-auto pb-1">
+      <div className="sticky top-0 z-[5] -mx-3 mb-3 flex gap-2 overflow-x-auto bg-crema px-3 py-2">
         {categorias.map((c) => (
           <button
             key={c.id}
             onClick={() => setCatId(c.id)}
-            className={`shrink-0 rounded px-3 py-2 font-medium ${
-              categoriaActiva === c.id ? "bg-orange-600 hover:bg-orange-700 text-white" : "border"
+            className={`shrink-0 rounded-full px-4 py-2.5 text-sm font-semibold transition-colors ${
+              categoriaActiva === c.id ? "bg-cafe text-crema" : "border border-borde bg-white text-cafe"
             }`}
           >
             {c.nombre}
@@ -641,34 +709,50 @@ function Captura({
         ))}
       </div>
 
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+      <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3">
         {productos
           .filter((p) => p.categoria_id === categoriaActiva)
-          .map((p) => (
-            <button
-              key={p.id}
-              onClick={() => tocarProducto(p)}
-              disabled={!p.disponible}
-              className="rounded border p-3 text-left disabled:opacity-40"
-            >
-              <span className="block font-medium">{p.nombre}</span>
-              <span className="text-sm text-slate-600">
-                {p.disponible ? `${dinero(p.precio)}${p.unidad === "KG" ? " / kg" : ""}` : "Agotado"}
-              </span>
-            </button>
-          ))}
+          .map((p) => {
+            const n = enRonda(p.id);
+            return (
+              <button
+                key={p.id}
+                onClick={() => tocarProducto(p)}
+                disabled={!p.disponible}
+                className={`relative min-h-[84px] rounded-2xl border-2 bg-white p-3 text-left transition-transform active:scale-[0.97] disabled:opacity-40 ${
+                  n > 0 ? "border-paliacate" : "border-borde"
+                }`}
+              >
+                {n > 0 && (
+                  <span className="absolute right-2 top-2 flex h-6 min-w-6 items-center justify-center rounded-full bg-paliacate px-1.5 text-xs font-bold text-white">
+                    {n}
+                  </span>
+                )}
+                <span className="block pr-6 font-semibold leading-snug">{p.nombre}</span>
+                <span className="mt-1 block text-sm text-cafe-medio">
+                  {p.disponible ? `${dinero(p.precio)}${p.unidad === "KG" ? " / kg" : ""}` : "Agotado"}
+                </span>
+              </button>
+            );
+          })}
       </div>
 
-      <section className="mt-4 flex-1 space-y-2">
-        <h3 className="font-semibold">Esta ronda</h3>
-        {lineas.length === 0 && <p className="text-sm text-slate-600">Toca un producto para agregarlo.</p>}
+      <section className="mt-5 flex-1 space-y-2 pb-4">
+        <h3 className="font-display text-lg font-bold">Esta ronda</h3>
+        {lineas.length === 0 && (
+          <p className="rounded-2xl border-2 border-dashed border-borde px-4 py-6 text-center text-sm text-cafe-medio">
+            Toca un producto para agregarlo.
+          </p>
+        )}
         {lineas.map((l) => (
-          <div key={l.clave} className="rounded border p-2">
+          <div key={l.clave} className="rounded-2xl border border-borde bg-white p-3">
             <div className="flex items-center justify-between gap-2">
-              <span>
-                {l.producto.nombre}
-                {l.opcion ? ` (${l.opcion.nombre})` : ""}
-                <span className="block text-xs text-slate-600">
+              <span className="min-w-0">
+                <span className="font-semibold">
+                  {l.producto.nombre}
+                  {l.opcion ? ` (${l.opcion.nombre})` : ""}
+                </span>
+                <span className="block text-xs text-cafe-medio">
                   {l.producto.unidad === "KG"
                     ? l.monto !== undefined
                       ? `${dinero(l.monto)} de producto (≈ ${(l.monto / Number(l.producto.precio)).toFixed(3)} kg)`
@@ -676,11 +760,12 @@ function Captura({
                     : `${l.cantidad} pz`}
                 </span>
               </span>
-              <span className="flex items-center gap-1">
+              <span className="flex shrink-0 items-center gap-1.5">
                 {l.producto.unidad === "PIEZA" && (
                   <>
                     <button
-                      className="h-9 w-9 rounded border"
+                      aria-label="Quitar uno"
+                      className="h-10 w-10 rounded-xl border border-borde text-xl font-semibold"
                       onClick={() =>
                         setLineas((prev) =>
                           prev.flatMap((x) =>
@@ -696,7 +781,8 @@ function Captura({
                       −
                     </button>
                     <button
-                      className="h-9 w-9 rounded border"
+                      aria-label="Agregar uno"
+                      className="h-10 w-10 rounded-xl border border-borde text-xl font-semibold"
                       onClick={() =>
                         setLineas((prev) =>
                           prev.map((x) => (x.clave === l.clave ? { ...x, cantidad: (x.cantidad ?? 0) + 1 } : x))
@@ -709,13 +795,13 @@ function Captura({
                 )}
                 {l.producto.unidad === "KG" && (
                   <button
-                    className="h-9 rounded border px-2 text-sm"
+                    className="h-10 rounded-xl border border-borde px-3 text-sm font-semibold"
                     onClick={() => setLineas((prev) => prev.filter((x) => x.clave !== l.clave))}
                   >
                     Quitar
                   </button>
                 )}
-                <span className="w-20 text-right">{dinero(importeLinea(l))}</span>
+                <span className="w-20 text-right font-semibold tabular-nums">{dinero(importeLinea(l))}</span>
               </span>
             </div>
             <input
@@ -726,20 +812,24 @@ function Captura({
                   prev.map((x) => (x.clave === l.clave ? { ...x, notas: e.target.value } : x))
                 )
               }
-              className="mt-1 w-full rounded border px-2 py-1 text-sm"
+              className="mt-2 w-full rounded-xl border border-borde bg-crema/40 px-3 py-2 text-sm focus:border-cafe focus:outline-none"
             />
           </div>
         ))}
       </section>
 
-      {error && <p className="mt-2 rounded bg-rose-50 p-2 text-sm text-rose-700">{error}</p>}
-      <button
-        onClick={enviar}
-        disabled={!lineas.length || enviando}
-        className="sticky bottom-2 mt-3 rounded bg-orange-600 hover:bg-orange-700 py-4 text-lg text-white font-semibold disabled:opacity-50"
-      >
-        {enviando ? "Enviando…" : `Enviar a cocina · ${dinero(total)}`}
-      </button>
+      {error && (
+        <p className="mb-2 rounded-xl bg-paliacate-claro px-3 py-2.5 text-sm font-medium text-paliacate-oscuro">{error}</p>
+      )}
+      <div className="sticky bottom-0 -mx-3 border-t border-borde bg-crema/95 px-3 pb-3 pt-2 backdrop-blur">
+        <button
+          onClick={enviar}
+          disabled={!lineas.length || enviando}
+          className="w-full rounded-xl bg-paliacate py-4 text-lg font-semibold text-white shadow-sm transition-colors hover:bg-paliacate-oscuro disabled:opacity-40"
+        >
+          {enviando ? "Enviando…" : `Enviar a cocina · ${dinero(total)}`}
+        </button>
+      </div>
 
       {eligiendo && (
         <Selector
@@ -773,19 +863,25 @@ function Selector({
   const precio = Number(producto.precio);
 
   return (
-    <div className="fixed inset-0 z-10 flex items-end justify-center bg-slate-900/40 sm:items-center" onClick={onCerrar}>
+    <div className="fixed inset-0 z-10 flex items-end justify-center bg-cafe/50 sm:items-center" onClick={onCerrar}>
       <div
-        className="w-full max-w-md space-y-3 rounded-t-xl border border-slate-200 bg-white p-4 shadow-xl sm:rounded-xl"
+        className="max-h-[90vh] w-full max-w-md space-y-4 overflow-y-auto rounded-t-3xl bg-crema p-5 shadow-xl sm:rounded-3xl"
         onClick={(e) => e.stopPropagation()}
       >
-        <h3 className="text-lg font-semibold">{producto.nombre}</h3>
+        <div className="flex items-baseline justify-between">
+          <h3 className="font-display text-2xl font-extrabold">{producto.nombre}</h3>
+          <span className="text-sm text-cafe-medio">
+            {dinero(precio)}
+            {producto.unidad === "KG" ? " / kg" : ""}
+          </span>
+        </div>
 
         {producto.requiere_opcion && (
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid grid-cols-2 gap-2.5">
             {opciones.map((o) => (
               <button
                 key={o.id}
-                className="rounded border py-4 font-medium"
+                className="rounded-2xl border-2 border-borde bg-white py-5 text-lg font-semibold active:scale-[0.97]"
                 onClick={() => onElegir({ opcion: o, cantidad: 1 })}
               >
                 {o.nombre}
@@ -796,30 +892,29 @@ function Selector({
 
         {producto.unidad === "KG" && (
           <>
-            <p className="text-sm text-slate-600">{dinero(precio)} por kilo</p>
             <div className="grid grid-cols-4 gap-2">
               {[0.25, 0.5, 0.75, 1].map((k) => (
                 <button
                   key={k}
-                  className="rounded border py-3 font-medium"
+                  className="rounded-2xl border-2 border-borde bg-white py-4 font-semibold active:scale-[0.97]"
                   onClick={() => onElegir({ opcion: null, cantidad: k })}
                 >
                   {k === 1 ? "1 kg" : `${k * 1000} g`}
                 </button>
               ))}
             </div>
-            <label className="block text-sm">
+            <label className="block text-sm font-semibold">
               Otro peso (kg)
-              <div className="flex gap-2">
+              <div className="mt-1 flex gap-2">
                 <input
                   inputMode="decimal"
                   value={peso}
                   onChange={(e) => setPeso(e.target.value)}
                   placeholder="0.350"
-                  className="flex-1 rounded border px-2 py-2"
+                  className="min-w-0 flex-1 rounded-xl border border-borde bg-white px-3 py-3 font-normal focus:border-cafe focus:outline-none"
                 />
                 <button
-                  className="rounded bg-orange-600 hover:bg-orange-700 px-4 text-white font-medium disabled:opacity-40"
+                  className="rounded-xl bg-paliacate px-5 font-semibold text-white disabled:opacity-40"
                   disabled={!(Number(peso) > 0)}
                   onClick={() =>
                     onElegir({ opcion: null, cantidad: Math.round(Number(peso) * 1000) / 1000 })
@@ -829,18 +924,18 @@ function Selector({
                 </button>
               </div>
             </label>
-            <label className="block text-sm">
+            <label className="block text-sm font-semibold">
               Por monto ($)
-              <div className="flex gap-2">
+              <div className="mt-1 flex gap-2">
                 <input
                   inputMode="decimal"
                   value={monto}
                   onChange={(e) => setMonto(e.target.value)}
                   placeholder="100"
-                  className="flex-1 rounded border px-2 py-2"
+                  className="min-w-0 flex-1 rounded-xl border border-borde bg-white px-3 py-3 font-normal focus:border-cafe focus:outline-none"
                 />
                 <button
-                  className="rounded bg-orange-600 hover:bg-orange-700 px-4 text-white font-medium disabled:opacity-40"
+                  className="rounded-xl bg-paliacate px-5 font-semibold text-white disabled:opacity-40"
                   disabled={!(Number(monto) > 0)}
                   onClick={() =>
                     onElegir({ opcion: null, monto: Math.round(Number(monto) * 100) / 100 })
@@ -850,12 +945,12 @@ function Selector({
                 </button>
               </div>
               {Number(monto) > 0 && (
-                <span className="text-xs text-slate-600">≈ {(Number(monto) / precio).toFixed(3)} kg</span>
+                <span className="mt-1 block text-xs font-normal text-cafe-medio">≈ {(Number(monto) / precio).toFixed(3)} kg</span>
               )}
             </label>
           </>
         )}
-        <button className="w-full py-2 text-sm underline" onClick={onCerrar}>
+        <button className="w-full rounded-xl py-3 text-sm font-semibold text-cafe-medio hover:bg-crema-oscuro" onClick={onCerrar}>
           Cerrar
         </button>
       </div>

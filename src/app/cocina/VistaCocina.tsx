@@ -53,6 +53,7 @@ export default function VistaCocina() {
 
   const conectado = useTiempoReal("cocina", ["pedidos", "detalle_pedido"], cargar);
 
+  // Efecto que ejecuta la impresión
   // El ticket no se borra al imprimir (en celulares window.print() no espera);
   // se reemplaza por el siguiente de la cola.
   useEffect(() => {

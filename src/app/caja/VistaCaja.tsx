@@ -219,21 +219,14 @@ export default function VistaCaja({ cuentaInicial = null }: { cuentaInicial?: st
 
     setCargando(true);
 
-    // 1. Intentar registrar en pagos de manera opcional (si la tabla existe)
-    await supabase.from("pagos").insert({
-      cuenta_id: seleccionada.id,
-      metodo: metodo,
-      total: totalFinalCobro,
-      redondeo: redondeo,
+    // Registra el pago y cierra la cuenta en un solo paso (función cobrar_cuenta de la base):
+    // guarda método, total, redondeo y fecha de cierre, que es lo que lee Reportes.
+    const { error: updateError } = await supabase.rpc("cobrar_cuenta", {
+      p_cuenta_id: seleccionada.id,
+      p_metodo: metodo,
+      p_total: totalFinalCobro,
+      p_redondeo: redondeo,
     });
-
-    // 2. Cerrar la cuenta actualizando únicamente el estado (columna universal)
-    const { error: updateError } = await supabase
-      .from("cuentas")
-      .update({
-        estado: "CERRADA",
-      })
-      .eq("id", seleccionada.id);
 
     setCargando(false);
 
@@ -249,33 +242,38 @@ export default function VistaCaja({ cuentaInicial = null }: { cuentaInicial?: st
 
   const pidioCuentaSeleccionada = seleccionada?.estado === "CUENTA_SOLICITADA";
 
+  const ETIQUETA_METODO: Record<MetodoPago, string> = {
+    EFECTIVO: "Efectivo",
+    TARJETA: "Tarjeta",
+    TRANSFERENCIA: "Transferencia",
+  };
+
   return (
-    <main className="mx-auto w-full max-w-6xl space-y-4 p-4">
+    <main className="mx-auto w-full max-w-6xl space-y-5 px-4 py-6">
       <Conexion conectado={conectado} />
 
-      <div className="flex items-center justify-between border-b pb-3">
-        <h1 className="text-2xl font-bold">Caja</h1>
-        <span className="text-sm text-slate-500">
-          {cuentas.length} {cuentas.length === 1 ? "cuenta activa" : "cuentas activas"}
-        </span>
-      </div>
-
       {errorCarga && (
-        <div className="rounded-lg bg-rose-50 p-3 text-sm text-rose-700">
-          <strong>Error en Caja:</strong> {errorCarga}
+        <div className="rounded-xl bg-paliacate-claro px-4 py-3 text-sm text-paliacate-oscuro">
+          <strong>No se pudieron cargar las cuentas:</strong> {errorCarga}
         </div>
       )}
 
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_400px]">
         {/* Lista de cuentas por cobrar */}
-        <section className="space-y-3 lg:col-span-2">
-          <h2 className="text-lg font-semibold text-slate-800">Cuentas activas en comedor</h2>
+        <section className="space-y-3">
+          <div className="flex items-baseline justify-between">
+            <h2 className="font-display text-2xl font-bold">Cuentas abiertas</h2>
+            <span className="text-sm text-cafe-medio">
+              {cuentas.length} {cuentas.length === 1 ? "cuenta" : "cuentas"}
+            </span>
+          </div>
+
           {cuentas.length === 0 ? (
-            <p className="rounded-xl border border-dashed p-8 text-center text-slate-500">
-              No hay cuentas abiertas con consumo actualmente.
+            <p className="rounded-2xl border-2 border-dashed border-borde px-4 py-12 text-center text-cafe-medio">
+              No hay cuentas con consumo en este momento.
             </p>
           ) : (
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
               {cuentas.map((c) => {
                 const total = totalCuenta(c.pedidos);
                 const activo = seleccionada?.id === c.id;
@@ -285,31 +283,31 @@ export default function VistaCaja({ cuentaInicial = null }: { cuentaInicial?: st
                   <button
                     key={c.id}
                     onClick={() => setCuentaIdSeleccionada(c.id)}
-                    className={`flex flex-col justify-between rounded-xl border-2 p-4 text-left transition-all ${
+                    className={`flex flex-col justify-between rounded-2xl border-2 p-4 text-left transition-colors ${
                       activo
-                        ? "border-blue-600 bg-blue-50/70 ring-2 ring-blue-500 shadow-md scale-[1.01]"
+                        ? "border-cafe bg-cafe text-crema"
                         : pidioCuenta
-                        ? "border-amber-400 bg-amber-50/70 hover:border-amber-500"
-                        : "border-slate-200 bg-white hover:border-slate-300"
+                        ? "border-paliacate bg-white hover:bg-paliacate-claro/50"
+                        : "border-borde bg-white hover:border-cafe-medio"
                     }`}
                   >
-                    <div className="flex items-center justify-between">
-                      <span className={`text-lg font-bold ${activo ? "text-blue-950" : "text-slate-900"}`}>
-                        {nombreCuenta(c)}
-                      </span>
+                    <div className="flex items-start justify-between gap-2">
+                      <span className="font-display text-xl font-bold">{nombreCuenta(c)}</span>
                       {pidioCuenta && (
-                        <span className="rounded-full bg-amber-200/80 px-2.5 py-0.5 text-xs font-black tracking-wide text-amber-900 shadow-sm animate-pulse">
-                          🔔 Pide cuenta
+                        <span
+                          className={`shrink-0 rounded-full px-2.5 py-0.5 text-xs font-bold ${
+                            activo ? "bg-queso text-cafe" : "bg-paliacate text-white"
+                          }`}
+                        >
+                          Pide cuenta
                         </span>
                       )}
                     </div>
-                    <div className="mt-4 flex items-end justify-between border-t border-slate-200/70 pt-2">
-                      <span className={`text-xs ${activo ? "text-blue-700 font-medium" : "text-slate-500"}`}>
-                        {c.pedidos?.length || 0} rondas
+                    <div className="mt-5 flex items-end justify-between">
+                      <span className={`text-xs ${activo ? "text-crema/70" : "text-cafe-medio"}`}>
+                        {c.pedidos?.length || 0} {(c.pedidos?.length || 0) === 1 ? "ronda" : "rondas"}
                       </span>
-                      <span className={`text-xl font-black ${activo ? "text-blue-700" : "text-slate-900"}`}>
-                        {dinero(total)}
-                      </span>
+                      <span className="font-display text-2xl font-bold tabular-nums">{dinero(total)}</span>
                     </div>
                   </button>
                 );
@@ -318,120 +316,109 @@ export default function VistaCaja({ cuentaInicial = null }: { cuentaInicial?: st
           )}
         </section>
 
-        {/* Panel de detalle y cobro */}
-        <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-          <h2 className="border-b pb-3 text-lg font-semibold text-slate-800">Detalle de Cobro</h2>
-
+        {/* Panel de cobro */}
+        <section className="h-fit rounded-2xl border border-borde bg-white lg:sticky lg:top-4">
           {!seleccionada ? (
-            <p className="py-12 text-center text-sm text-slate-400">
-              Selecciona una cuenta para ver el desglose, imprimir ticket o cobrar.
-            </p>
+            <div className="px-6 py-16 text-center text-cafe-medio">
+              <p className="font-display text-lg font-bold text-cafe">Selecciona una cuenta</p>
+              <p className="mt-1 text-sm">Aquí verás el total, el ticket y el cobro.</p>
+            </div>
           ) : (
-            <div className="mt-4 space-y-4">
-              <div className="flex justify-between text-base font-bold">
-                <span className="text-blue-900">{nombreCuenta(seleccionada)}</span>
-                <span className="text-blue-700">{dinero(totalFinalCobro)}</span>
+            <div>
+              <div className="border-b border-borde px-5 py-4">
+                <p className="text-sm text-cafe-medio">{nombreCuenta(seleccionada)}</p>
+                <p className="font-display text-5xl font-extrabold tabular-nums leading-tight">
+                  {dinero(totalFinalCobro)}
+                </p>
+                {metodo === "EFECTIVO" && redondeo !== 0 && (
+                  <p className="text-xs text-cafe-medio">
+                    Redondeado desde {dinero(totalCalculado)} (efectivo, a 50 centavos)
+                  </p>
+                )}
               </div>
 
-              {/* Botón de impresión */}
-              <div className="space-y-1">
+              <div className="space-y-5 px-5 py-5">
                 <button
                   type="button"
                   disabled={!pidioCuentaSeleccionada}
                   onClick={() => iniciarImpresion(seleccionada)}
-                  className={`w-full rounded-lg border py-2.5 text-sm font-semibold transition active:scale-[0.99] ${
+                  className={`w-full rounded-xl border-2 py-3 font-semibold transition-colors ${
                     pidioCuentaSeleccionada
-                      ? "border-slate-300 bg-slate-50 text-slate-700 hover:bg-slate-100 shadow-sm cursor-pointer"
-                      : "border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed"
+                      ? "border-cafe text-cafe hover:bg-crema"
+                      : "cursor-not-allowed border-borde text-cafe/40"
                   }`}
                 >
-                  {pidioCuentaSeleccionada
-                    ? "🖨️ Imprimir ticket de cuenta"
-                    : "⏳ Esperando solicitud de cuenta (Mesero)"}
+                  {pidioCuentaSeleccionada ? "Imprimir ticket de cuenta" : "Esperando que el mesero pida la cuenta"}
                 </button>
-              </div>
 
-              {/* Método de pago */}
-              <div className="space-y-2 border-t pt-3">
-                <span className="text-xs font-bold uppercase tracking-wider text-slate-500">
-                  Método de pago
-                </span>
-                <div className="grid grid-cols-3 gap-2 text-xs font-semibold">
-                  {(["EFECTIVO", "TARJETA", "TRANSFERENCIA"] as MetodoPago[]).map((m) => (
-                    <button
-                      key={m}
-                      onClick={() => setMetodo(m)}
-                      className={`rounded-lg border py-2 capitalize transition ${
-                        metodo === m
-                          ? "border-blue-600 bg-blue-600 text-white font-bold"
-                          : "border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100"
-                      }`}
-                    >
-                      {m.toLowerCase()}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Calculadora de Efectivo y Cambio */}
-              {metodo === "EFECTIVO" && (
-                <div className="rounded-xl border border-amber-200 bg-amber-50/50 p-3.5 space-y-3">
-                  <div className="flex items-center justify-between text-xs font-bold text-slate-600">
-                    <span>Efectivo recibido:</span>
-                    <span className="text-slate-400">Total: {dinero(totalFinalCobro)}</span>
-                  </div>
-
-                  <div className="relative">
-                    <span className="absolute left-3 top-2 text-slate-400 font-bold">$</span>
-                    <input
-                      type="number"
-                      inputMode="decimal"
-                      placeholder="0.00"
-                      value={pagoCon}
-                      onChange={(e) => setPagoCon(e.target.value)}
-                      className="w-full rounded-lg border border-slate-300 bg-white py-2 pl-7 pr-3 text-lg font-bold text-slate-900 shadow-inner focus:border-blue-500 focus:outline-none"
-                    />
-                  </div>
-
-                  {/* Atajos de billetes */}
-                  <div className="grid grid-cols-4 gap-1.5 text-xs font-bold">
-                    {[50, 100, 200, 500].map((b) => (
+                <div className="space-y-2">
+                  <span className="text-sm font-semibold">Método de pago</span>
+                  <div className="grid grid-cols-3 gap-1 rounded-xl bg-crema-oscuro p-1">
+                    {(["EFECTIVO", "TARJETA", "TRANSFERENCIA"] as MetodoPago[]).map((m) => (
                       <button
-                        key={b}
-                        type="button"
-                        onClick={() => setPagoCon(String(b))}
-                        className="rounded border border-slate-200 bg-white py-1.5 text-slate-700 hover:bg-slate-100 shadow-sm"
+                        key={m}
+                        onClick={() => setMetodo(m)}
+                        className={`rounded-lg py-2.5 text-sm font-semibold transition-colors ${
+                          metodo === m ? "bg-white text-cafe shadow-sm" : "text-cafe-medio hover:text-cafe"
+                        }`}
                       >
-                        ${b}
+                        {ETIQUETA_METODO[m]}
                       </button>
                     ))}
                   </div>
-
-                  {/* Desglose de cambio */}
-                  <div className="border-t border-amber-200/80 pt-2 flex items-center justify-between">
-                    <span className="text-xs font-semibold text-slate-600">Cambio a entregar:</span>
-                    <span
-                      className={`text-lg font-black ${
-                        faltaDinero
-                          ? "text-rose-600"
-                          : cambio > 0
-                          ? "text-emerald-700"
-                          : "text-slate-700"
-                      }`}
-                    >
-                      {faltaDinero ? `Faltan ${dinero(totalFinalCobro - montoRecibido)}` : dinero(cambio)}
-                    </span>
-                  </div>
                 </div>
-              )}
 
-              <button
-                disabled={cargando || faltaDinero}
-                onClick={cobrar}
-                className="w-full rounded-lg bg-emerald-600 py-3 text-lg font-bold text-white shadow transition hover:bg-emerald-700 active:scale-[0.99] disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {cargando ? "Procesando..." : "Confirmar Cobro"}
-              </button>
+                {metodo === "EFECTIVO" && (
+                  <div className="space-y-3 rounded-xl bg-queso-claro p-4">
+                    <label className="block">
+                      <span className="text-sm font-semibold">Recibido</span>
+                      <div className="relative mt-1">
+                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-lg font-bold text-cafe-medio">$</span>
+                        <input
+                          type="number"
+                          inputMode="decimal"
+                          placeholder="0.00"
+                          value={pagoCon}
+                          onChange={(e) => setPagoCon(e.target.value)}
+                          className="w-full rounded-xl border border-borde bg-white py-3 pl-8 pr-3 font-display text-2xl font-bold tabular-nums focus:border-cafe focus:outline-none"
+                        />
+                      </div>
+                    </label>
+
+                    <div className="grid grid-cols-4 gap-2">
+                      {[50, 100, 200, 500].map((b) => (
+                        <button
+                          key={b}
+                          type="button"
+                          onClick={() => setPagoCon(String(b))}
+                          className="rounded-lg border border-borde bg-white py-2 text-sm font-semibold hover:border-cafe-medio"
+                        >
+                          ${b}
+                        </button>
+                      ))}
+                    </div>
+
+                    <div className="flex items-baseline justify-between border-t border-queso/60 pt-3">
+                      <span className="text-sm font-semibold">{faltaDinero ? "Faltan" : "Cambio"}</span>
+                      <span
+                        className={`font-display text-3xl font-extrabold tabular-nums ${
+                          faltaDinero ? "text-paliacate" : cambio > 0 ? "text-hoja" : "text-cafe"
+                        }`}
+                      >
+                        {faltaDinero ? dinero(totalFinalCobro - montoRecibido) : dinero(cambio)}
+                      </span>
+                    </div>
+                  </div>
+                )}
+
+                <button
+                  disabled={cargando || faltaDinero}
+                  onClick={cobrar}
+                  className="w-full rounded-xl bg-paliacate py-4 text-lg font-semibold text-white shadow-sm transition-colors hover:bg-paliacate-oscuro disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  {cargando ? "Procesando…" : `Cobrar ${dinero(totalFinalCobro)}`}
+                </button>
+              </div>
             </div>
           )}
         </section>

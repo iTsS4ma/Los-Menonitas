@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Image from "next/image";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense } from "react";
 import { crearClienteNavegador } from "@/lib/supabase/client";
@@ -32,42 +33,62 @@ function FormularioLogin() {
   }
 
   return (
-    <main className="flex flex-1 items-center justify-center p-6">
-      <div className="w-full max-w-sm space-y-4">
-        <h1 className="text-2xl font-semibold">Iniciar sesión</h1>
+    <main className="flex flex-1 flex-col">
+      <div className="paliacate h-2" aria-hidden />
+      <div className="flex flex-1 items-center justify-center p-6">
+        <div className="w-full max-w-sm">
+          <div className="mb-6 flex flex-col items-center text-center">
+            <Image
+              src="/logo.png"
+              alt="Los Menonitas"
+              width={160}
+              height={156}
+              className="h-40 w-auto"
+              priority
+            />
+            <h1 className="mt-3 font-display text-3xl font-extrabold">Los Menonitas</h1>
+            <p className="text-sm text-cafe-medio">Entra con tu correo y contraseña</p>
+          </div>
 
-        <label className="block">
-          <span className="text-sm">Correo</span>
-          <input
-            type="email"
-            autoComplete="email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            className="mt-1 w-full rounded border px-3 py-3 text-base"
-          />
-        </label>
+          <div className="space-y-4 rounded-2xl border border-borde bg-white p-5 shadow-sm">
+            <label className="block">
+              <span className="text-sm font-semibold">Correo</span>
+              <input
+                type="email"
+                autoComplete="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                className="mt-1 w-full rounded-xl border border-borde bg-crema/40 px-3 py-3 text-base focus:border-cafe focus:outline-none"
+              />
+            </label>
 
-        <label className="block">
-          <span className="text-sm">Contraseña</span>
-          <input
-            type="password"
-            autoComplete="current-password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && entrar()}
-            className="mt-1 w-full rounded border px-3 py-3 text-base"
-          />
-        </label>
+            <label className="block">
+              <span className="text-sm font-semibold">Contraseña</span>
+              <input
+                type="password"
+                autoComplete="current-password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && entrar()}
+                className="mt-1 w-full rounded-xl border border-borde bg-crema/40 px-3 py-3 text-base focus:border-cafe focus:outline-none"
+              />
+            </label>
 
-        {error && <p className="text-sm text-rose-600">{error}</p>}
+            {error && (
+              <p className="rounded-xl bg-paliacate-claro px-3 py-2 text-sm font-medium text-paliacate-oscuro">
+                {error}
+              </p>
+            )}
 
-        <button
-          onClick={entrar}
-          disabled={cargando || !email || !password}
-          className="w-full rounded bg-orange-600 hover:bg-orange-700 py-3 text-white disabled:opacity-50"
-        >
-          {cargando ? "Entrando…" : "Entrar"}
-        </button>
+            <button
+              onClick={entrar}
+              disabled={cargando || !email || !password}
+              className="w-full rounded-xl bg-paliacate py-3.5 text-lg font-semibold text-white transition-colors hover:bg-paliacate-oscuro disabled:opacity-40"
+            >
+              {cargando ? "Entrando…" : "Entrar"}
+            </button>
+          </div>
+        </div>
       </div>
     </main>
   );

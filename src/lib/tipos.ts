@@ -19,6 +19,7 @@ export type Detalle = {
 export type Pedido = {
   id: string; cuenta_id: string; numero_ronda: number; estado: EstadoPedido;
   creado_en: string; listo_en: string | null; detalle_pedido: Detalle[];
+  // Solo viene cuando la consulta hace join con cuentas (vista de cocina)
   cuentas?: Omit<Cuenta, "pedidos"> | null;
 };
 export type Cuenta = {
@@ -26,5 +27,7 @@ export type Cuenta = {
   numero_orden: number | null; estado: EstadoCuenta; abierta_en: string;
   mesas: { numero: number } | null; pedidos: Pedido[];
 };
+
+// Alias usados en caja y mesero
 export type MetodoPago = Metodo;
 export type DetallePedido = Detalle;
