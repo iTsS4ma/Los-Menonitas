@@ -94,7 +94,10 @@ export async function elegirImpresora(d: Destino, reemplazarTodas = false) {
   if (!bt()) throw new Error("Este navegador no puede usar Bluetooth. Usa Chrome.");
   const dev = await bt().requestDevice({ acceptAllDevices: true, optionalServices: SERVICIOS });
   let lista = reemplazarTodas ? [] : guardadas(d).filter((g) => g.id !== dev.id);
-  if (reemplazarTodas) dispositivos[d].clear();
+  if (reemplazarTodas) {
+    dispositivos[d].forEach((x) => soltar(x));
+    dispositivos[d].clear();
+  }
   lista = [...lista, { id: dev.id, nombre: dev.name ?? "Impresora" }];
   guardar(d, lista);
   dispositivos[d].set(dev.id, dev);
@@ -103,6 +106,8 @@ export async function elegirImpresora(d: Destino, reemplazarTodas = false) {
 }
 
 export function quitarImpresora(d: Destino, id: string) {
+  const dev = dispositivos[d].get(id);
+  if (dev) soltar(dev);
   guardar(d, guardadas(d).filter((g) => g.id !== id));
   dispositivos[d].delete(id);
   avisar(d);
@@ -110,40 +115,121 @@ export function quitarImpresora(d: Destino, id: string) {
 
 async function caracteristicaEscritura(servidor: any) {
   const servicios = await servidor.getPrimaryServices();
+  let sinConfirmacion: any = null;
   for (const s of servicios) {
     for (const c of await s.getCharacteristics()) {
-      if (c.properties.writeWithoutResponse || c.properties.write) return c;
+      if (c.properties.write) return c; // preferida: confirma cada envío
+      if (c.properties.writeWithoutResponse && !sinConfirmacion) sinConfirmacion = c;
     }
   }
+  if (sinConfirmacion) return sinConfirmacion;
   throw new Error("La impresora no aceptó la conexión. ¿Es Bluetooth BLE?");
 }
 
-async function enviarA(dispositivo: any, bytes: Uint8Array) {
-  let servidor: any;
+// ---------------------------------------------------------------------------
+// Conexiones: se mantienen abiertas unos segundos por si vienen más tickets
+// (reconectar seguido falla, sobre todo en Windows). Al soltar una impresora
+// se espera antes de volver a conectarla, y si conectar falla se reintenta.
+// ---------------------------------------------------------------------------
+
+// Cuánto tiempo sin imprimir antes de soltar la impresora
+const ESPERA_SOLTAR: Record<Destino, number> = {
+  cocina: 4000, // corto: otros meseros usan las mismas impresoras
+  caja: 20000, // la impresora de caja es solo de la computadora de caja
+};
+const PAUSA_TRAS_SOLTAR = 1500;
+
+type Conexion = { servidor: any; caract: any; temporizador?: ReturnType<typeof setTimeout> };
+const conexiones = new Map<string, Conexion>();
+const soltadaEn = new Map<string, number>();
+const dormir = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+function soltar(dev: any) {
+  const c = conexiones.get(dev.id);
+  if (c?.temporizador) clearTimeout(c.temporizador);
+  conexiones.delete(dev.id);
   try {
-    servidor = await dispositivo.gatt.connect();
-  } catch {
-    throw new Error("no se pudo conectar (¿encendida y cerca?)");
+    if (dev.gatt?.connected) dev.gatt.disconnect();
+  } catch {}
+  soltadaEn.set(dev.id, Date.now());
+}
+
+async function conectar(dev: any): Promise<Conexion> {
+  const viva = conexiones.get(dev.id);
+  if (viva && dev.gatt?.connected) return viva;
+  if (viva) soltar(dev);
+
+  if (!dev.__escuchaDesconexion) {
+    dev.addEventListener?.("gattserverdisconnected", () => {
+      conexiones.delete(dev.id);
+      soltadaEn.set(dev.id, Date.now());
+    });
+    dev.__escuchaDesconexion = true;
   }
-  try {
-    const c = await caracteristicaEscritura(servidor);
-    const TROZO = 100;
-    for (let i = 0; i < bytes.length; i += TROZO) {
-      const parte = bytes.slice(i, i + TROZO);
-      if (c.properties.writeWithoutResponse && c.writeValueWithoutResponse) {
-        await c.writeValueWithoutResponse(parte);
-        await new Promise((r) => setTimeout(r, 25));
-      } else {
-        await c.writeValue(parte);
-      }
-    }
-    // Pequeña espera para que la impresora termine de recibir antes de desconectar
-    await new Promise((r) => setTimeout(r, 400));
-  } finally {
+
+  let ultimoError: unknown;
+  for (let intento = 0; intento < 3; intento++) {
+    // Darle tiempo a la impresora (y a Windows) después de soltarla
+    const desde = Date.now() - (soltadaEn.get(dev.id) ?? 0);
+    const pausa = intento === 0 ? PAUSA_TRAS_SOLTAR - desde : 1000 * intento;
+    if (pausa > 0) await dormir(pausa);
     try {
-      servidor.disconnect();
-    } catch {}
+      const servidor = await dev.gatt.connect();
+      const caract = await caracteristicaEscritura(servidor);
+      const c: Conexion = { servidor, caract };
+      conexiones.set(dev.id, c);
+      return c;
+    } catch (e) {
+      ultimoError = e;
+      try {
+        dev.gatt?.disconnect();
+      } catch {}
+      soltadaEn.set(dev.id, Date.now());
+    }
   }
+  const msg = ultimoError instanceof Error ? ultimoError.message : "";
+  throw new Error(/BLE/.test(msg) ? msg : "no se pudo conectar (¿encendida y cerca?)");
+}
+
+// Si la impresora lo permite, se escribe CON confirmación: cada trozo espera el
+// "recibido" de la impresora, y si no llega, falla con error (en vez de perderse
+// en silencio). Si solo acepta sin confirmación, se manda más despacio.
+async function escribir(caract: any, bytes: Uint8Array) {
+  const conConfirmacion = !!caract.properties.write;
+  const TROZO = conConfirmacion ? 180 : 100;
+  for (let i = 0; i < bytes.length; i += TROZO) {
+    const parte = bytes.slice(i, i + TROZO);
+    if (conConfirmacion) {
+      if (caract.writeValueWithResponse) await caract.writeValueWithResponse(parte);
+      else await caract.writeValue(parte);
+    } else {
+      await caract.writeValueWithoutResponse(parte);
+      await dormir(50);
+    }
+  }
+}
+
+// Tiempo aproximado que tarda la impresora en sacar el ticket (~80 ms por renglón)
+function tiempoImpresion(bytes: Uint8Array) {
+  let renglones = 0;
+  for (const b of bytes) if (b === 10) renglones++;
+  return 300 + renglones * 80;
+}
+
+async function enviarA(dev: any, bytes: Uint8Array, d: Destino) {
+  let c = await conectar(dev);
+  try {
+    await escribir(c.caract, bytes);
+  } catch {
+    // La conexión guardada se había caído: reconectar una vez y reintentar
+    soltar(dev);
+    c = await conectar(dev);
+    await escribir(c.caract, bytes);
+  }
+  // Esperar a que termine de imprimir antes del siguiente ticket
+  await dormir(tiempoImpresion(bytes));
+  if (c.temporizador) clearTimeout(c.temporizador);
+  c.temporizador = setTimeout(() => soltar(dev), ESPERA_SOLTAR[d]);
 }
 
 /** Error con el detalle de qué impresoras fallaron (para reintentar solo esas). */
@@ -178,7 +264,7 @@ export function imprimir(d: Destino, bytes: Uint8Array, soloIds?: string[]): Pro
           continue;
         }
         try {
-          await enviarA(dev, bytes);
+          await enviarA(dev, bytes, d);
         } catch (e) {
           fallidas.push({ ...g, motivo: e instanceof Error ? e.message : "error", sinPermiso: false });
         }
