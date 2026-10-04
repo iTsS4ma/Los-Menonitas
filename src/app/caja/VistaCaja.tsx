@@ -6,6 +6,8 @@ import { useTiempoReal } from "@/hooks/useTiempoReal";
 import { crearClienteNavegador } from "@/lib/supabase/client";
 import { diaMX, dinero, nombreCuenta, totalCuenta } from "@/lib/formato";
 import type { Cuenta, MetodoPago, DetallePedido, Mesa, Pedido } from "@/lib/tipos";
+import BotonImpresora from "@/components/BotonImpresora";
+import { elegirImpresora, ErrorImpresion, estadoImpresoras, imprimir, ticketCuenta as bytesTicketCuenta } from "@/lib/impresoraBT";
 
 type ItemAgrupado = {
   nombre: string;
@@ -28,6 +30,52 @@ function horaActualMX() {
     minute: "2-digit",
     hour12: true,
   }).format(new Date());
+}
+
+// Productos de la cuenta agrupados para el ticket (sin rondas ni productos cancelados)
+function agruparProductos(ticketCuenta: Cuenta | null): ItemAgrupado[] {
+    if (!ticketCuenta) return [];
+
+    const mapa = new Map<string, ItemAgrupado>();
+
+    ticketCuenta.pedidos?.filter((p) => p.estado !== "CANCELADO").forEach((p) => {
+      p.detalle_pedido
+        ?.filter((d: any) => d.estado === "ACTIVO" || !d.estado)
+        .forEach((d: any) => {
+          const nombreCompleto = `${d.nombre_producto || "Producto"}${d.nombre_opcion ? ` (${d.nombre_opcion})` : ""}${d.con_quesillo ? " + quesillo" : ""}`;
+          const cant = Number(d.cantidad) || 1;
+
+          let pu = 0;
+          if (d.precio_unitario !== undefined && d.precio_unitario !== null) {
+            pu = Number(d.precio_unitario);
+          } else if (d.precio !== undefined && d.precio !== null) {
+            pu = Number(d.precio);
+          } else if (d.subtotal !== undefined && d.subtotal !== null) {
+            pu = Number(d.subtotal) / cant;
+          }
+
+          if (isNaN(pu)) pu = 0;
+
+          // El importe guardado ya incluye el quesillo
+          const sub = !isNaN(Number(d.importe)) ? Number(d.importe) : cant * pu;
+
+          const clave = `${nombreCompleto}_${pu}`;
+
+          const previo = mapa.get(clave) || {
+            nombre: nombreCompleto,
+            cantidad: 0,
+            unidad: d.unidad || "PZA",
+            precio_unitario: pu,
+            subtotal: 0,
+          };
+
+          previo.cantidad += cant;
+          previo.subtotal += sub;
+          mapa.set(clave, previo);
+        });
+    });
+
+    return [...mapa.values()];
 }
 
 export default function VistaCaja({ cuentaInicial = null }: { cuentaInicial?: string | null }) {
@@ -147,12 +195,43 @@ export default function VistaCaja({ cuentaInicial = null }: { cuentaInicial?: st
 
   const conectado = useTiempoReal("caja", ["cuentas", "pedidos", "detalle_pedido"], cargar);
 
-  const iniciarImpresion = (cuenta: Cuenta) => {
+  const [errorImpresion, setErrorImpresion] = useState<{ cuenta: Cuenta; mensaje: string; sinPermiso: boolean } | null>(null);
+
+  // Ticket de cuenta: por la impresora Bluetooth de caja si hay una configurada;
+  // si no, con la ventana de impresión del navegador.
+  async function iniciarImpresion(cuenta: Cuenta, reconectar = false) {
     if (cuenta.estado !== "CUENTA_SOLICITADA") return;
-    setHoraTicket(horaActualMX());
+    const hora = horaActualMX();
+    setHoraTicket(hora);
     setTicketCuenta(cuenta);
-    setOrdenImpresion((n) => n + 1);
-  };
+
+    if (!reconectar && estadoImpresoras("caja").impresoras.length === 0) {
+      setOrdenImpresion((n) => n + 1);
+      return;
+    }
+
+    const bytes = bytesTicketCuenta({
+      cuenta: nombreCuenta(cuenta),
+      fecha: `${diaMX()} ${hora}`,
+      renglones: agruparProductos(cuenta).map((it) => ({
+        cantidad: it.unidad === "KG" ? `${it.cantidad.toFixed(3)}kg` : `${it.cantidad}x`,
+        nombre: it.nombre,
+        importe: dinero(it.subtotal),
+      })),
+      total: dinero(totalCuenta(cuenta.pedidos)),
+    });
+    try {
+      if (reconectar) await elegirImpresora("caja", true);
+      await imprimir("caja", bytes);
+      setErrorImpresion(null);
+    } catch (e) {
+      setErrorImpresion({
+        cuenta,
+        mensaje: e instanceof Error ? e.message : "Error al imprimir.",
+        sinPermiso: e instanceof ErrorImpresion && (e.fallidas.length === 0 || e.fallidas.some((f) => f.sinPermiso)),
+      });
+    }
+  }
 
   // No se borra el ticket tras imprimir: en iPhone/Android window.print() no espera
   // y si se quita el ticket, la vista previa sale en blanco.
@@ -162,50 +241,7 @@ export default function VistaCaja({ cuentaInicial = null }: { cuentaInicial?: st
     return () => clearTimeout(timer);
   }, [ordenImpresion]);
 
-  const productosAgrupados = useMemo(() => {
-    if (!ticketCuenta) return [];
-
-    const mapa = new Map<string, ItemAgrupado>();
-
-    ticketCuenta.pedidos?.forEach((p) => {
-      p.detalle_pedido
-        ?.filter((d: any) => d.estado === "ACTIVO" || !d.estado)
-        .forEach((d: any) => {
-          const nombreCompleto = `${d.nombre_producto || "Producto"}${d.nombre_opcion ? ` (${d.nombre_opcion})` : ""}${d.con_quesillo ? " + quesillo" : ""}`;
-          const cant = Number(d.cantidad) || 1;
-
-          let pu = 0;
-          if (d.precio_unitario !== undefined && d.precio_unitario !== null) {
-            pu = Number(d.precio_unitario);
-          } else if (d.precio !== undefined && d.precio !== null) {
-            pu = Number(d.precio);
-          } else if (d.subtotal !== undefined && d.subtotal !== null) {
-            pu = Number(d.subtotal) / cant;
-          }
-
-          if (isNaN(pu)) pu = 0;
-
-          // El importe guardado ya incluye el quesillo
-          const sub = !isNaN(Number(d.importe)) ? Number(d.importe) : cant * pu;
-
-          const clave = `${nombreCompleto}_${pu}`;
-
-          const previo = mapa.get(clave) || {
-            nombre: nombreCompleto,
-            cantidad: 0,
-            unidad: d.unidad || "PZA",
-            precio_unitario: pu,
-            subtotal: 0,
-          };
-
-          previo.cantidad += cant;
-          previo.subtotal += sub;
-          mapa.set(clave, previo);
-        });
-    });
-
-    return [...mapa.values()];
-  }, [ticketCuenta]);
+  const productosAgrupados = useMemo(() => agruparProductos(ticketCuenta), [ticketCuenta]);
 
   async function cobrar() {
     if (!seleccionada) return;
@@ -249,6 +285,10 @@ export default function VistaCaja({ cuentaInicial = null }: { cuentaInicial?: st
   return (
     <main className="mx-auto w-full max-w-6xl space-y-5 px-4 py-6">
       <Conexion conectado={conectado} />
+
+      <div className="max-w-md">
+        <BotonImpresora destino="caja" titulo="Impresora de tickets (caja)" />
+      </div>
 
       {errorCarga && (
         <div className="rounded-xl bg-paliacate-claro px-4 py-3 text-sm text-paliacate-oscuro">
@@ -336,6 +376,30 @@ export default function VistaCaja({ cuentaInicial = null }: { cuentaInicial?: st
               </div>
 
               <div className="space-y-5 px-5 py-5">
+                {errorImpresion && (
+                  <div className="space-y-2 rounded-xl border-2 border-paliacate bg-paliacate-claro p-3 text-sm text-paliacate-oscuro">
+                    <p>
+                      <strong>No se imprimió el ticket.</strong> {errorImpresion.mensaje}
+                    </p>
+                    <div className="flex gap-2">
+                      <button
+                        className="flex-1 rounded-lg bg-paliacate py-2 font-semibold text-white"
+                        onClick={() => iniciarImpresion(errorImpresion.cuenta, errorImpresion.sinPermiso)}
+                      >
+                        {errorImpresion.sinPermiso ? "Conectar e imprimir" : "Reintentar"}
+                      </button>
+                      <button
+                        className="rounded-lg border border-paliacate/40 px-3 font-semibold"
+                        onClick={() => {
+                          setErrorImpresion(null);
+                          setOrdenImpresion((n) => n + 1);
+                        }}
+                      >
+                        Usar ventana
+                      </button>
+                    </div>
+                  </div>
+                )}
                 <button
                   type="button"
                   disabled={!pidioCuentaSeleccionada}

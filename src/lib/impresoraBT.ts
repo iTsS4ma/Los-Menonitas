@@ -1,18 +1,20 @@
-// Impresión directa a impresora térmica Bluetooth (BLE) desde Chrome en Android.
-// Se conecta solo para imprimir y se desconecta enseguida, para que otros meseros
-// puedan usar la misma impresora.
+// Impresión directa a impresoras térmicas Bluetooth (BLE) desde Chrome
+// (Android o computadora con Bluetooth). Cada "destino" (cocina, caja) puede
+// tener una o varias impresoras; la comanda se manda a todas, una por una.
+// Se conecta solo para imprimir y se desconecta enseguida, para que otros
+// equipos puedan usar la misma impresora.
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-export type EstadoImpresora = {
+export type Destino = "cocina" | "caja";
+
+export type ImpresoraGuardada = { id: string; nombre: string; lista: boolean };
+
+export type EstadoImpresoras = {
   soportado: boolean;
-  nombre: string | null; // impresora elegida en este celular
-  lista: boolean; // ya se puede imprimir sin volver a elegirla
+  impresoras: ImpresoraGuardada[];
   imprimiendo: boolean;
 };
-
-const CLAVE_ID = "impresora_bt_id";
-const CLAVE_NOMBRE = "impresora_bt_nombre";
 
 // Servicios que usan las impresoras térmicas Bluetooth más comunes
 const SERVICIOS = [
@@ -25,68 +27,85 @@ const SERVICIOS = [
   "49535343-fe7d-4ae5-8fa9-9fafd205e455",
 ];
 
-let dispositivo: any = null;
-let imprimiendo = false;
+const dispositivos: Record<Destino, Map<string, any>> = { cocina: new Map(), caja: new Map() };
+const imprimiendo: Record<Destino, boolean> = { cocina: false, caja: false };
 let cola: Promise<unknown> = Promise.resolve();
-const oyentes = new Set<(e: EstadoImpresora) => void>();
+const oyentes: Record<Destino, Set<(e: EstadoImpresoras) => void>> = { cocina: new Set(), caja: new Set() };
 
 const bt = () => (typeof navigator !== "undefined" ? (navigator as any).bluetooth : undefined);
-const leer = (k: string) => {
-  try {
-    return localStorage.getItem(k);
-  } catch {
-    return null;
-  }
-};
+const clave = (d: Destino) => `impresoras_bt_${d}`;
 
-export function estadoImpresora(): EstadoImpresora {
+function guardadas(d: Destino): { id: string; nombre: string }[] {
+  try {
+    const crudo = localStorage.getItem(clave(d));
+    if (crudo) return JSON.parse(crudo);
+    // Compatibilidad con la versión anterior (una sola impresora de cocina)
+    if (d === "cocina") {
+      const id = localStorage.getItem("impresora_bt_id");
+      if (id) return [{ id, nombre: localStorage.getItem("impresora_bt_nombre") ?? "Impresora" }];
+    }
+  } catch {}
+  return [];
+}
+
+function guardar(d: Destino, lista: { id: string; nombre: string }[]) {
+  try {
+    localStorage.setItem(clave(d), JSON.stringify(lista));
+  } catch {}
+}
+
+export function estadoImpresoras(d: Destino): EstadoImpresoras {
   return {
     soportado: !!bt(),
-    nombre: dispositivo?.name ?? leer(CLAVE_NOMBRE),
-    lista: !!dispositivo,
-    imprimiendo,
+    impresoras: guardadas(d).map((g) => ({ ...g, lista: dispositivos[d].has(g.id) })),
+    imprimiendo: imprimiendo[d],
   };
 }
 
-function avisar() {
-  const e = estadoImpresora();
-  oyentes.forEach((f) => f(e));
+function avisar(d: Destino) {
+  const e = estadoImpresoras(d);
+  oyentes[d].forEach((f) => f(e));
 }
 
-export function escucharImpresora(f: (e: EstadoImpresora) => void) {
-  oyentes.add(f);
-  f(estadoImpresora());
+export function escucharImpresoras(d: Destino, f: (e: EstadoImpresoras) => void) {
+  oyentes[d].add(f);
+  f(estadoImpresoras(d));
   return () => {
-    oyentes.delete(f);
+    oyentes[d].delete(f);
   };
 }
 
-/** Recupera la impresora elegida antes, sin pedir nada al usuario (si Chrome lo permite). */
-export async function recuperarImpresora() {
-  if (dispositivo) return true;
-  const id = leer(CLAVE_ID);
-  if (!id || !bt()?.getDevices) return false;
+/** Recupera las impresoras elegidas antes, sin pedir nada (si Chrome lo permite). */
+export async function recuperarImpresoras(d: Destino) {
+  const lista = guardadas(d);
+  if (!lista.length || !bt()?.getDevices) return;
   try {
-    const lista = await bt().getDevices();
-    dispositivo = lista.find((d: any) => d.id === id) ?? null;
-  } catch {
-    dispositivo = null;
-  }
-  avisar();
-  return !!dispositivo;
+    const conocidos = await bt().getDevices();
+    lista.forEach((g) => {
+      const dev = conocidos.find((x: any) => x.id === g.id);
+      if (dev) dispositivos[d].set(g.id, dev);
+    });
+  } catch {}
+  avisar(d);
 }
 
-/** Abre la ventana de Chrome para elegir la impresora. Debe llamarse desde un toque del usuario. */
-export async function elegirImpresora() {
-  if (!bt()) throw new Error("Este navegador no puede usar Bluetooth. Usa Chrome en Android.");
-  const d = await bt().requestDevice({ acceptAllDevices: true, optionalServices: SERVICIOS });
-  dispositivo = d;
-  try {
-    localStorage.setItem(CLAVE_ID, d.id);
-    localStorage.setItem(CLAVE_NOMBRE, d.name ?? "Impresora");
-  } catch {}
-  avisar();
-  return d.name as string;
+/** Abre la ventana de Chrome para elegir una impresora. Debe llamarse desde un toque. */
+export async function elegirImpresora(d: Destino, reemplazarTodas = false) {
+  if (!bt()) throw new Error("Este navegador no puede usar Bluetooth. Usa Chrome.");
+  const dev = await bt().requestDevice({ acceptAllDevices: true, optionalServices: SERVICIOS });
+  let lista = reemplazarTodas ? [] : guardadas(d).filter((g) => g.id !== dev.id);
+  if (reemplazarTodas) dispositivos[d].clear();
+  lista = [...lista, { id: dev.id, nombre: dev.name ?? "Impresora" }];
+  guardar(d, lista);
+  dispositivos[d].set(dev.id, dev);
+  avisar(d);
+  return dev.name as string;
+}
+
+export function quitarImpresora(d: Destino, id: string) {
+  guardar(d, guardadas(d).filter((g) => g.id !== id));
+  dispositivos[d].delete(id);
+  avisar(d);
 }
 
 async function caracteristicaEscritura(servidor: any) {
@@ -99,15 +118,12 @@ async function caracteristicaEscritura(servidor: any) {
   throw new Error("La impresora no aceptó la conexión. ¿Es Bluetooth BLE?");
 }
 
-async function enviarBytes(bytes: Uint8Array) {
-  if (!dispositivo) await recuperarImpresora();
-  if (!dispositivo) throw new SinImpresora();
-
+async function enviarA(dispositivo: any, bytes: Uint8Array) {
   let servidor: any;
   try {
     servidor = await dispositivo.gatt.connect();
   } catch {
-    throw new Error("No se pudo conectar con la impresora. ¿Está encendida y cerca?");
+    throw new Error("no se pudo conectar (¿encendida y cerca?)");
   }
   try {
     const c = await caracteristicaEscritura(servidor);
@@ -130,26 +146,56 @@ async function enviarBytes(bytes: Uint8Array) {
   }
 }
 
-export class SinImpresora extends Error {
-  constructor() {
-    super("No hay impresora elegida en este celular.");
+/** Error con el detalle de qué impresoras fallaron (para reintentar solo esas). */
+export class ErrorImpresion extends Error {
+  constructor(public fallidas: { id: string; nombre: string; motivo: string; sinPermiso: boolean }[]) {
+    super(
+      fallidas.length === 0
+        ? "No hay impresora configurada."
+        : fallidas.map((f) => `${f.nombre}: ${f.motivo}`).join(" · ")
+    );
   }
 }
 
-/** Imprime (en fila, una a la vez). */
-export function imprimir(bytes: Uint8Array): Promise<void> {
+/**
+ * Imprime en todas las impresoras del destino (o solo en `soloIds`), una por una.
+ * Si alguna falla, lanza ErrorImpresion con las que fallaron; las demás sí imprimen.
+ */
+export function imprimir(d: Destino, bytes: Uint8Array, soloIds?: string[]): Promise<void> {
   const tarea = cola.then(async () => {
-    imprimiendo = true;
-    avisar();
+    const lista = guardadas(d).filter((g) => !soloIds || soloIds.includes(g.id));
+    if (lista.length === 0) throw new ErrorImpresion([]);
+    if (lista.some((g) => !dispositivos[d].has(g.id))) await recuperarImpresoras(d);
+
+    imprimiendo[d] = true;
+    avisar(d);
+    const fallidas: ErrorImpresion["fallidas"] = [];
     try {
-      await enviarBytes(bytes);
+      for (const g of lista) {
+        const dev = dispositivos[d].get(g.id);
+        if (!dev) {
+          fallidas.push({ ...g, motivo: "hay que volver a conectarla", sinPermiso: true });
+          continue;
+        }
+        try {
+          await enviarA(dev, bytes);
+        } catch (e) {
+          fallidas.push({ ...g, motivo: e instanceof Error ? e.message : "error", sinPermiso: false });
+        }
+      }
     } finally {
-      imprimiendo = false;
-      avisar();
+      imprimiendo[d] = false;
+      avisar(d);
     }
+    if (fallidas.length) throw new ErrorImpresion(fallidas);
   });
   cola = tarea.catch(() => undefined);
   return tarea;
+}
+
+/** Vuelve a dar permiso a una impresora guardada (abre la ventana de Chrome). */
+export async function reconectarImpresora(d: Destino) {
+  return elegirImpresora(d);
 }
 
 // ---------------------------------------------------------------------------
@@ -230,5 +276,29 @@ export function ticketCancelacion(d: { cuenta: string; ronda: number; hora: stri
   t.texto("Motivo:");
   partir(d.motivo, ANCHO).forEach((l) => t.texto(l));
   t.linea("=").centro().negrita(true).texto("RETIRAR COMANDA").negrita(false).avanzar(4).cortar();
+  return t.bytes();
+}
+
+export function ticketCuenta(d: {
+  cuenta: string;
+  fecha: string;
+  renglones: { cantidad: string; nombre: string; importe: string }[];
+  total: string;
+}) {
+  const t = new Ticket().centro().grande().negrita(true).texto("LOS MENONITAS").normal().negrita(false);
+  t.texto("Norte 72, 3540 colonia la joya").texto("CP 07890, GAM, CDMX").linea();
+  t.negrita(true).texto(d.cuenta).negrita(false).texto(d.fecha).izquierda().linea();
+  d.renglones.forEach((r) => {
+    const izquierda = `${r.cantidad} ${r.nombre}`;
+    const anchoTexto = ANCHO - r.importe.length - 1;
+    const lineas = partir(izquierda, anchoTexto, "   ");
+    lineas.forEach((l, i) => {
+      t.texto(i === 0 ? l.padEnd(anchoTexto) + " " + limpio(r.importe) : l);
+    });
+  });
+  t.linea();
+  const etiqueta = "TOTAL";
+  t.grande().negrita(true).texto(etiqueta + limpio(d.total).padStart(16 - etiqueta.length)).normal().negrita(false);
+  t.linea().centro().texto("Gracias por su preferencia!").avanzar(4).cortar();
   return t.bytes();
 }
