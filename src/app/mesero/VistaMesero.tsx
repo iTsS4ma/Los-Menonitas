@@ -4,7 +4,6 @@ import { generarUUID } from "@/lib/formato";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import Conexion from "@/components/Conexion";
-import BotonNotificaciones from "@/components/BotonNotificaciones";
 import BotonImpresora from "@/components/BotonImpresora";
 import { elegirImpresora, imprimir, SinImpresora, ticketCancelacion, ticketComanda } from "@/lib/impresoraBT";
 import { useTiempoReal } from "@/hooks/useTiempoReal";
@@ -31,21 +30,7 @@ type DatosTicketCancelacion = {
   hora: string;
 };
 
-const ETIQUETA_PEDIDO: Record<string, string> = {
-  ENVIADO: "En cola",
-  PREPARANDO: "Preparando",
-  LISTO: "¡Listo!",
-  ENTREGADO: "Entregado",
-  CANCELADO: "Cancelado",
-};
 
-const ESTILO_ESTADO: Record<string, string> = {
-  ENVIADO: "bg-queso-claro text-cafe",
-  PREPARANDO: "bg-queso text-cafe",
-  LISTO: "bg-hoja text-white",
-  ENTREGADO: "bg-crema-oscuro text-cafe-medio",
-  CANCELADO: "bg-paliacate-claro text-paliacate-oscuro",
-};
 
 function horaActualMX() {
   return new Intl.DateTimeFormat("es-MX", {
@@ -275,39 +260,12 @@ export default function VistaMesero({ perfil, cuentaInicial = null }: { perfil: 
     }
   }
 
-  // Validación estricta para no pedir cuenta con pedidos activos en cocina
+  // Cocina ya no marca rondas como listas: la cuenta se puede pedir en cualquier momento
   async function pedirCuentaSegura() {
     if (!cuenta) return;
     setSolicitandoCuenta(true);
     setAviso("");
-
-    const { data: pedidosActuales, error: errVerif } = await supabase
-      .from("pedidos")
-      .select("id, estado")
-      .eq("cuenta_id", cuenta.id);
-
-    if (errVerif) {
-      setSolicitandoCuenta(false);
-      return setAviso("Error al verificar pedidos: " + errVerif.message);
-    }
-
-    const pedidosPendientes = (pedidosActuales || []).filter((p) => {
-      const estadoNorm = String(p.estado || "").toUpperCase().trim();
-      return !["ENTREGADO", "CANCELADO"].includes(estadoNorm);
-    });
-
-    if (pedidosPendientes.length > 0) {
-      setSolicitandoCuenta(false);
-      setAviso("⚠️ No se puede pedir la cuenta: Hay pedidos en preparación o listos sin entregar.");
-      await cargar();
-      return;
-    }
-
-    const { error } = await supabase
-      .from("cuentas")
-      .update({ estado: "CUENTA_SOLICITADA" })
-      .eq("id", cuenta.id);
-
+    const { error } = await supabase.from("cuentas").update({ estado: "CUENTA_SOLICITADA" }).eq("id", cuenta.id);
     setSolicitandoCuenta(false);
     if (error) setAviso(errorTexto(error));
     await cargar();
@@ -336,18 +294,7 @@ export default function VistaMesero({ perfil, cuentaInicial = null }: { perfil: 
     const total = totalCuenta(cuenta.pedidos);
     const rondas = [...(cuenta.pedidos || [])].sort((a, b) => a.numero_ronda - b.numero_ronda);
 
-    const tieneEnPreparacion = rondas.some((p) => {
-      const st = String(p.estado || "").toUpperCase().trim();
-      return st === "ENVIADO" || st === "PREPARANDO" || st === "EN_COLA";
-    });
-
-    const tieneListosPorEntregar = rondas.some((p) => {
-      const st = String(p.estado || "").toUpperCase().trim();
-      return st === "LISTO";
-    });
-
-    const hayPendientes = tieneEnPreparacion || tieneListosPorEntregar;
-    const puedePedirCuenta = cuenta.estado === "ABIERTA" && total > 0 && !hayPendientes && !solicitandoCuenta;
+    const puedePedirCuenta = cuenta.estado === "ABIERTA" && total > 0 && !solicitandoCuenta;
 
     return (
       <main className="mx-auto w-full max-w-2xl space-y-4 px-3 pb-8 pt-3">
@@ -391,9 +338,7 @@ export default function VistaMesero({ perfil, cuentaInicial = null }: { perfil: 
           return (
             <section
               key={p.id}
-              className={`rounded-2xl border bg-white p-4 ${
-                estadoNorm === "LISTO" ? "border-hoja ring-2 ring-hoja/30" : "border-borde"
-              }`}
+              className="rounded-2xl border border-borde bg-white p-4"
             >
               <div className="mb-3 flex items-center justify-between">
                 <span className="flex items-center gap-2">
@@ -407,8 +352,12 @@ export default function VistaMesero({ perfil, cuentaInicial = null }: { perfil: 
                     </button>
                   )}
                 </span>
-                <span className={`rounded-full px-3 py-1 text-xs font-bold ${ESTILO_ESTADO[estadoNorm] ?? "bg-crema-oscuro text-cafe"}`}>
-                  {ETIQUETA_PEDIDO[estadoNorm] || p.estado}
+                <span
+                  className={`rounded-full px-3 py-1 text-xs font-bold ${
+                    estadoNorm === "CANCELADO" ? "bg-paliacate-claro text-paliacate-oscuro" : "bg-crema-oscuro text-cafe-medio"
+                  }`}
+                >
+                  {estadoNorm === "CANCELADO" ? "Cancelada" : "Enviada"}
                 </span>
               </div>
               <ul className="space-y-2">
@@ -426,7 +375,7 @@ export default function VistaMesero({ perfil, cuentaInicial = null }: { perfil: 
                         <span className="tabular-nums">{dinero(d.importe)}</span>
                         {d.estado === "ACTIVO" &&
                           estadoNorm !== "CANCELADO" &&
-                          (perfil.rol === "ADMIN" || ["ENVIADO", "PREPARANDO"].includes(estadoNorm)) && (
+                          estadoNorm !== "ENTREGADO" && (
                             <button
                               className="rounded-lg px-2 py-1 text-xs font-semibold text-paliacate hover:bg-paliacate-claro"
                               onClick={() => cancelarItemIndividual(d, p)}
@@ -439,26 +388,14 @@ export default function VistaMesero({ perfil, cuentaInicial = null }: { perfil: 
                   );
                 })}
               </ul>
-              {(estadoNorm === "LISTO" || ["ENVIADO", "PREPARANDO"].includes(estadoNorm)) && (
-                <div className="mt-4 flex gap-2">
-                  {estadoNorm === "LISTO" && (
-                    <button
-                      className="flex-1 rounded-xl bg-hoja py-3.5 text-lg font-semibold text-white shadow-sm active:scale-[0.99]"
-                      onClick={() =>
-                        ejecutar(() => supabase.from("pedidos").update({ estado: "ENTREGADO" }).eq("id", p.id))
-                      }
-                    >
-                      Marcar entregado
-                    </button>
-                  )}
-                  {["ENVIADO", "PREPARANDO"].includes(estadoNorm) && (
-                    <button
-                      className="rounded-xl border border-paliacate/40 px-4 py-2.5 text-sm font-semibold text-paliacate hover:bg-paliacate-claro"
-                      onClick={() => cancelarRondaCompleta(p)}
-                    >
-                      Cancelar ronda
-                    </button>
-                  )}
+              {estadoNorm !== "CANCELADO" && estadoNorm !== "ENTREGADO" && (
+                <div className="mt-4 flex justify-end">
+                  <button
+                    className="rounded-xl border border-paliacate/40 px-4 py-2.5 text-sm font-semibold text-paliacate hover:bg-paliacate-claro"
+                    onClick={() => cancelarRondaCompleta(p)}
+                  >
+                    Cancelar ronda
+                  </button>
                 </div>
               )}
             </section>
@@ -474,7 +411,7 @@ export default function VistaMesero({ perfil, cuentaInicial = null }: { perfil: 
           </button>
 
           {cuenta.estado === "ABIERTA" && total > 0 && (
-            <div className="space-y-1.5">
+            <div>
               <button
                 disabled={!puedePedirCuenta}
                 className={`w-full rounded-xl py-3.5 font-semibold transition-colors ${
@@ -484,21 +421,8 @@ export default function VistaMesero({ perfil, cuentaInicial = null }: { perfil: 
                 }`}
                 onClick={pedirCuentaSegura}
               >
-                {solicitandoCuenta
-                  ? "Verificando…"
-                  : tieneEnPreparacion
-                  ? "Cocina preparando platillos…"
-                  : tieneListosPorEntregar
-                  ? "Entrega los platillos listos primero"
-                  : "Pedir la cuenta"}
+                {solicitandoCuenta ? "Enviando…" : "Pedir la cuenta"}
               </button>
-              {hayPendientes && (
-                <p className="text-center text-xs font-medium text-cafe-medio">
-                  {tieneEnPreparacion
-                    ? "Hay platillos en preparación en cocina."
-                    : "Hay platillos listos sin marcar como entregados."}
-                </p>
-              )}
             </div>
           )}
 
@@ -535,14 +459,6 @@ export default function VistaMesero({ perfil, cuentaInicial = null }: { perfil: 
 
   // ---------- Vista: lista de mesas / para llevar ----------
   const paraLlevar = cuentas.filter((c) => c.tipo === "PARA_LLEVAR");
-  const tieneListo = (c?: Cuenta) =>
-    !!c?.pedidos?.some((p) => String(p.estado || "").toUpperCase().trim() === "LISTO");
-  const tieneEnCocina = (c?: Cuenta) =>
-    !!c?.pedidos?.some((p) => {
-      const st = String(p.estado || "").toUpperCase().trim();
-      return st === "ENVIADO" || st === "PREPARANDO";
-    });
-
   return (
     <main className="mx-auto w-full max-w-3xl space-y-4 px-3 pb-8 pt-3">
       <Conexion conectado={conectado} />
@@ -552,7 +468,6 @@ export default function VistaMesero({ perfil, cuentaInicial = null }: { perfil: 
 
       {avisoImpresion}
       <BotonImpresora />
-      <BotonNotificaciones />
 
       <div className="grid grid-cols-2 gap-1 rounded-2xl bg-crema-oscuro p-1">
         {(["MESAS", "LLEVAR"] as const).map((p) => (
@@ -578,14 +493,8 @@ export default function VistaMesero({ perfil, cuentaInicial = null }: { perfil: 
             <div className="grid grid-cols-3 gap-3 sm:grid-cols-4">
               {mesas.map((m) => {
                 const c = cuentas.find((x) => x.mesa_id === m.id);
-                const listo = tieneListo(c);
-                const enCocina = tieneEnCocina(c);
                 const pidioCuenta = c?.estado === "CUENTA_SOLICITADA";
-                const estilo = listo
-                  ? "border-hoja bg-hoja text-white"
-                  : enCocina
-                  ? "border-queso bg-queso-claro text-cafe"
-                  : pidioCuenta
+                const estilo = pidioCuenta
                   ? "border-paliacate bg-paliacate-claro text-cafe"
                   : c
                   ? "border-cafe bg-white text-cafe"
@@ -596,25 +505,9 @@ export default function VistaMesero({ perfil, cuentaInicial = null }: { perfil: 
                     onClick={() => abrirMesa(m)}
                     className={`relative flex aspect-square flex-col items-center justify-center rounded-2xl border-2 transition-transform active:scale-95 ${estilo}`}
                   >
-                    {listo && enCocina && (
-                      <span
-                        className="absolute right-2 top-2 h-3 w-3 rounded-full bg-queso ring-2 ring-white"
-                        title="Otra ronda sigue en cocina"
-                      />
-                    )}
                     <span className="font-display text-4xl font-extrabold leading-none">{m.numero}</span>
                     <span className="mt-1.5 text-xs font-semibold">
-                      {listo
-                        ? enCocina
-                          ? "¡Listo! + cocina"
-                          : "¡Listo!"
-                        : enCocina
-                        ? "En cocina"
-                        : c
-                        ? pidioCuenta
-                          ? "Cuenta"
-                          : dinero(totalCuenta(c.pedidos))
-                        : "Libre"}
+                      {c ? (pidioCuenta ? "Cuenta" : dinero(totalCuenta(c.pedidos))) : "Libre"}
                     </span>
                   </button>
                 );
@@ -624,8 +517,6 @@ export default function VistaMesero({ perfil, cuentaInicial = null }: { perfil: 
             <div className="flex flex-wrap gap-x-4 gap-y-1.5 px-1 text-xs text-cafe-medio">
               <Leyenda color="bg-white border-2 border-borde" texto="Libre" />
               <Leyenda color="bg-white border-2 border-cafe" texto="Abierta" />
-              <Leyenda color="bg-queso" texto="En cocina" />
-              <Leyenda color="bg-hoja" texto="Listo para llevar" />
               <Leyenda color="bg-paliacate" texto="Pidió cuenta" />
             </div>
           </>
@@ -642,17 +533,16 @@ export default function VistaMesero({ perfil, cuentaInicial = null }: { perfil: 
             <p className="py-6 text-center text-sm text-cafe-medio">No hay órdenes para llevar abiertas.</p>
           )}
           {paraLlevar.map((c) => {
-            const listo = tieneListo(c);
             return (
               <button
                 key={c.id}
                 onClick={() => setCuentaId(c.id)}
                 className={`flex w-full items-center justify-between rounded-2xl border-2 px-4 py-4 text-left ${
-                  listo ? "border-hoja bg-hoja text-white" : "border-borde bg-white"
+                  c.estado === "CUENTA_SOLICITADA" ? "border-paliacate bg-paliacate-claro" : "border-borde bg-white"
                 }`}
               >
                 <span className="font-display text-lg font-bold">{nombreCuenta(c)}</span>
-                <span className="font-semibold">{listo ? "¡Listo!" : dinero(totalCuenta(c.pedidos))}</span>
+                <span className="font-semibold">{c.estado === "CUENTA_SOLICITADA" ? "Cuenta" : dinero(totalCuenta(c.pedidos))}</span>
               </button>
             );
           })}
@@ -696,7 +586,10 @@ function Captura({
   const [enviando, setEnviando] = useState(false);
   const [error, setError] = useState("");
 
-  const categoriaActiva = catId ?? categorias[0]?.id ?? null;
+  // El quesillo se pregunta en cada platillo: no se muestra como producto suelto
+  const productosVisibles = productos.filter((p) => p.nombre !== "Quesillo extra");
+  const categoriasVisibles = categorias.filter((c) => productosVisibles.some((p) => p.categoria_id === c.id));
+  const categoriaActiva = catId ?? categoriasVisibles[0]?.id ?? null;
 
   useEffect(() => {
     const aviso = (e: BeforeUnloadEvent) => {
@@ -765,7 +658,7 @@ function Captura({
       </div>
 
       <div className="sticky top-0 z-[5] -mx-3 mb-3 flex gap-2 overflow-x-auto bg-crema px-3 py-2">
-        {categorias.map((c) => (
+        {categoriasVisibles.map((c) => (
           <button
             key={c.id}
             onClick={() => setCatId(c.id)}
@@ -779,7 +672,7 @@ function Captura({
       </div>
 
       <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3">
-        {productos
+        {productosVisibles
           .filter((p) => p.categoria_id === categoriaActiva)
           .map((p) => {
             const n = enRonda(p.id);

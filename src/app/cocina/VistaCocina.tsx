@@ -6,7 +6,6 @@ import { useTiempoReal } from "@/hooks/useTiempoReal";
 import { crearClienteNavegador } from "@/lib/supabase/client";
 import { cantidadTexto, minutosDesde, nombreCuenta } from "@/lib/formato";
 import type { Pedido } from "@/lib/tipos";
-import { avisarPedidoListo } from "./acciones";
 
 export default function VistaCocina() {
   const supabase = useMemo(() => crearClienteNavegador(), []);
@@ -16,8 +15,10 @@ export default function VistaCocina() {
   const cargar = useCallback(async () => {
     const { data } = await supabase
       .from("pedidos")
-      .select("*, cuentas(*, mesas(numero)), detalle_pedido(*, productos(descripcion))")
+      .select("*, cuentas!inner(*, mesas(numero)), detalle_pedido(*, productos(descripcion))")
       .in("estado", ["ENVIADO", "PREPARANDO"])
+      // Solo rondas de cuentas que siguen abiertas (al cobrar, desaparecen de esta pantalla)
+      .in("cuentas.estado", ["ABIERTA", "CUENTA_SOLICITADA"])
       .order("creado_en");
 
     if (data) {
@@ -64,9 +65,6 @@ export default function VistaCocina() {
       alert(`Error al guardar en base de datos: ${errListo.message}`);
       await cargar();
     }
-
-    // Aviso push a los meseros (si falla, no bloquea a cocina)
-    if (!errListo) avisarPedidoListo(pedido.id).catch((e) => console.error("Aviso push:", e));
   }
 
   return (
@@ -154,7 +152,7 @@ export default function VistaCocina() {
                     onClick={() => marcarListo(p)}
                     className="w-full rounded-lg bg-emerald-600 py-3 text-lg font-bold text-white transition hover:bg-emerald-700 active:scale-[0.99]"
                   >
-                    ¡Listo para entregar!
+                    Listo (quitar de pantalla)
                   </button>
                 </div>
               </div>
