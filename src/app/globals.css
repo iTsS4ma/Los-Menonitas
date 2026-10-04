@@ -48,40 +48,52 @@
 /* FORMATO PARA IMPRESIÓN DE TICKETS TÉRMICOS / COMANDAS    */
 /* ========================================================= */
 @media print {
+  @page {
+    margin: 0;
+  }
+
+  html,
   body {
     background: white !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    min-height: 0 !important;
   }
 
-  /* Oculta toda la interfaz de la página */
-  body * {
-    visibility: hidden !important;
+  /* Quita de la hoja todo lo que no sea el ticket (así no salen metros de papel en blanco) */
+  body *:not(:has(#ticket-impresion, #ticket-cuenta)):not(#ticket-impresion):not(#ticket-impresion *):not(#ticket-cuenta):not(#ticket-cuenta *) {
+    display: none !important;
   }
 
-  /* Hace visible el ticket activo */
-  #ticket-impresion,
-  #ticket-impresion *,
-  #ticket-cuenta,
-  #ticket-cuenta * {
-    visibility: visible !important;
+  /* Los contenedores del ticket, sin márgenes ni rellenos */
+  body *:has(#ticket-impresion, #ticket-cuenta) {
+    display: block !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border: 0 !important;
+    box-shadow: none !important;
+    max-width: none !important;
+    min-height: 0 !important;
   }
 
   #ticket-impresion,
   #ticket-cuenta {
-    position: absolute !important;
-    left: 14mm !important;
-    top: 10mm !important;
-    width: 65mm !important;
+    display: block !important;
+    position: relative !important;
+    width: 48mm !important;
+    min-height: 0 !important;
     margin: 0 !important;
-    padding: 0 !important;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace !important;
-    font-size: 13px !important;
+    padding: 1mm 0 6mm 0 !important;
+    box-sizing: border-box !important;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif !important;
+    font-size: 12px !important;
     line-height: 1.25 !important;
     color: black !important;
     background: white !important;
     -webkit-print-color-adjust: exact !important;
     print-color-adjust: exact !important;
   }
-
+}
   @page {
     size: auto;
     margin: 8mm;
