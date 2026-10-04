@@ -171,7 +171,7 @@ export default function VistaCaja({ cuentaInicial = null }: { cuentaInicial?: st
       p.detalle_pedido
         ?.filter((d: any) => d.estado === "ACTIVO" || !d.estado)
         .forEach((d: any) => {
-          const nombreCompleto = `${d.nombre_producto || "Producto"}${d.nombre_opcion ? ` (${d.nombre_opcion})` : ""}`;
+          const nombreCompleto = `${d.nombre_producto || "Producto"}${d.nombre_opcion ? ` (${d.nombre_opcion})` : ""}${d.con_quesillo ? " + quesillo" : ""}`;
           const cant = Number(d.cantidad) || 1;
 
           let pu = 0;
@@ -185,10 +185,8 @@ export default function VistaCaja({ cuentaInicial = null }: { cuentaInicial?: st
 
           if (isNaN(pu)) pu = 0;
 
-          const sub =
-            d.subtotal !== undefined && !isNaN(Number(d.subtotal))
-              ? Number(d.subtotal)
-              : cant * pu;
+          // El importe guardado ya incluye el quesillo
+          const sub = !isNaN(Number(d.importe)) ? Number(d.importe) : cant * pu;
 
           const clave = `${nombreCompleto}_${pu}`;
 

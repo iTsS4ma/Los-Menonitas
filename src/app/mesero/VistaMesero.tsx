@@ -5,6 +5,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import Conexion from "@/components/Conexion";
 import BotonNotificaciones from "@/components/BotonNotificaciones";
+import BotonImpresora from "@/components/BotonImpresora";
+import { elegirImpresora, imprimir, SinImpresora, ticketCancelacion, ticketComanda } from "@/lib/impresoraBT";
 import { useTiempoReal } from "@/hooks/useTiempoReal";
 import { crearClienteNavegador } from "@/lib/supabase/client";
 import { cantidadTexto, dinero, errorTexto, nombreCuenta, totalCuenta } from "@/lib/formato";
@@ -17,6 +19,7 @@ type Linea = {
   opcion: Opcion | null;
   cantidad?: number;
   monto?: number;
+  quesillo: boolean;
   notas: string;
 };
 
@@ -67,8 +70,8 @@ export default function VistaMesero({ perfil, cuentaInicial = null }: { perfil: 
   const [solicitandoCuenta, setSolicitandoCuenta] = useState(false);
 
   // Estado para disparar la impresión del ticket de cancelación
-  const [ticketCancelacion, setTicketCancelacion] = useState<DatosTicketCancelacion | null>(null);
-  const [ordenImpresion, setOrdenImpresion] = useState(0);
+  // Impresión de comandas por Bluetooth desde este celular
+  const [fallaImpresion, setFallaImpresion] = useState<{ bytes: Uint8Array; etiqueta: string; error: string } | null>(null);
 
   const cargar = useCallback(async () => {
     const [m, c, cat, p, o] = await Promise.all([
@@ -95,13 +98,89 @@ export default function VistaMesero({ perfil, cuentaInicial = null }: { perfil: 
 
   const cuenta = cuentas.find((c) => c.id === cuentaId) ?? null;
 
-  // Disparar ventana de impresión cuando se prepara un ticket de cancelación
-  // No se borra el ticket tras imprimir (en celulares window.print() no espera)
-  useEffect(() => {
-    if (ordenImpresion === 0) return;
-    const timer = setTimeout(() => window.print(), 300);
-    return () => clearTimeout(timer);
-  }, [ordenImpresion]);
+  async function imprimirSeguro(bytes: Uint8Array, etiqueta: string) {
+    try {
+      await imprimir(bytes);
+      setFallaImpresion(null);
+    } catch (e) {
+      const error = e instanceof SinImpresora ? "No hay impresora conectada en este celular." : e instanceof Error ? e.message : "Error al imprimir.";
+      setFallaImpresion({ bytes, etiqueta, error });
+    }
+  }
+
+  // Reintento desde el aviso (es un toque del usuario, así que puede pedir elegir impresora)
+  async function reintentarImpresion() {
+    if (!fallaImpresion) return;
+    try {
+      await imprimir(fallaImpresion.bytes);
+      setFallaImpresion(null);
+    } catch (e) {
+      if (e instanceof SinImpresora) {
+        try {
+          await elegirImpresora();
+          await imprimir(fallaImpresion.bytes);
+          setFallaImpresion(null);
+        } catch (e2) {
+          setFallaImpresion({ ...fallaImpresion, error: e2 instanceof Error ? e2.message : "Error al imprimir." });
+        }
+      } else {
+        setFallaImpresion({ ...fallaImpresion, error: e instanceof Error ? e.message : "Error al imprimir." });
+      }
+    }
+  }
+
+  // Imprime la comanda de una ronda (al enviarla o al reimprimir)
+  async function imprimirRonda(pedidoId: string) {
+    const { data } = await supabase
+      .from("pedidos")
+      .select("numero_ronda, cuenta_id, detalle_pedido(*, productos(descripcion)), cuentas(tipo, nombre_cliente, numero_orden, mesas(numero))")
+      .eq("id", pedidoId)
+      .single();
+    if (!data) return;
+    const p = data as unknown as Pedido & { cuentas: Cuenta };
+    const bytes = ticketComanda({
+      cuenta: nombreCuenta(p.cuentas),
+      ronda: p.numero_ronda,
+      hora: horaActualMX(),
+      mesero: perfil.nombre,
+      renglones: (p.detalle_pedido || [])
+        .filter((d) => d.estado === "ACTIVO")
+        .map((d) => ({
+          texto: `${cantidadTexto(d)} ${d.nombre_producto}${d.nombre_opcion ? ` (${d.nombre_opcion})` : ""}`,
+          detalle: d.productos?.descripcion ?? null,
+          quesillo: !!d.con_quesillo,
+          nota: d.notas,
+        })),
+    });
+    await imprimirSeguro(bytes, `Comanda ${nombreCuenta(p.cuentas)} · Ronda ${p.numero_ronda}`);
+  }
+
+  async function imprimirCancelacion(datos: DatosTicketCancelacion) {
+    const bytes = ticketCancelacion({
+      cuenta: datos.cuentaNombre,
+      ronda: datos.ronda,
+      hora: datos.hora,
+      motivo: datos.motivo,
+      renglones: datos.items.map((it) => ({ texto: `${it.cantidad} ${it.nombre}` })),
+    });
+    await imprimirSeguro(bytes, `Cancelación ${datos.cuentaNombre} · Ronda ${datos.ronda}`);
+  }
+
+  const avisoImpresion = fallaImpresion && (
+    <div className="space-y-2 rounded-xl border-2 border-paliacate bg-paliacate-claro px-3 py-3 text-sm text-paliacate-oscuro">
+      <p>
+        <strong>No se imprimió:</strong> {fallaImpresion.etiqueta}. {fallaImpresion.error}
+      </p>
+      <div className="flex gap-2">
+        <button onClick={reintentarImpresion} className="flex-1 rounded-lg bg-paliacate py-2.5 font-semibold text-white">
+          Reintentar impresión
+        </button>
+        <button onClick={() => setFallaImpresion(null)} className="rounded-lg border border-paliacate/40 px-3 font-semibold">
+          Omitir
+        </button>
+      </div>
+    </div>
+  );
 
   async function ejecutar(accion: () => PromiseLike<{ error: unknown }>) {
     setAviso("");
@@ -151,7 +230,7 @@ export default function VistaMesero({ perfil, cuentaInicial = null }: { perfil: 
     );
 
     if (exito && cuenta) {
-      setTicketCancelacion({
+      await imprimirCancelacion({
         cuentaNombre: nombreCuenta(cuenta),
         ronda: p.numero_ronda,
         items: [
@@ -164,7 +243,6 @@ export default function VistaMesero({ perfil, cuentaInicial = null }: { perfil: 
         motivo: motivo.trim(),
         hora: horaActualMX(),
       });
-      setOrdenImpresion((n) => n + 1);
     }
   }
 
@@ -187,14 +265,13 @@ export default function VistaMesero({ perfil, cuentaInicial = null }: { perfil: 
           notas: d.notas ?? undefined,
         }));
 
-      setTicketCancelacion({
+      await imprimirCancelacion({
         cuentaNombre: nombreCuenta(cuenta),
         ronda: p.numero_ronda,
         items: itemsActivos.length > 0 ? itemsActivos : [{ nombre: "Ronda completa cancelada", cantidad: "Toda" }],
         motivo: motivo.trim(),
         hora: horaActualMX(),
       });
-      setOrdenImpresion((n) => n + 1);
     }
   }
 
@@ -245,9 +322,10 @@ export default function VistaMesero({ perfil, cuentaInicial = null }: { perfil: 
         productos={productos}
         opciones={opciones}
         onCancelar={() => setCapturando(false)}
-        onEnviado={async () => {
+        onEnviado={async (pedidoId) => {
           setCapturando(false);
           await cargar();
+          if (pedidoId) imprimirRonda(pedidoId);
         }}
       />
     );
@@ -276,13 +354,9 @@ export default function VistaMesero({ perfil, cuentaInicial = null }: { perfil: 
         <Conexion conectado={conectado} />
         <button
           onClick={() => setCuentaId(null)}
-          className="flex w-fit items-center gap-2.5 rounded-xl border-2 border-cafe bg-white px-5 py-3 text-base font-semibold transition-all hover:bg-crema-claro active:scale-95 active:bg-crema-oscuro"
-          aria-label="Volver a mesas"
+          className="flex w-full items-center justify-center gap-2 rounded-xl border-2 border-cafe bg-white py-3.5 text-base font-semibold active:scale-[0.99] active:bg-crema-oscuro"
         >
-          <span aria-hidden className="text-2xl font-bold leading-none select-none">
-            ←
-          </span>
-          <span>Mesas</span>
+          <span aria-hidden className="text-xl leading-none">‹</span> Regresar a las mesas
         </button>
 
         <div className="flex items-end justify-between rounded-2xl border border-borde bg-white px-4 py-4">
@@ -304,6 +378,8 @@ export default function VistaMesero({ perfil, cuentaInicial = null }: { perfil: 
           <p className="rounded-xl bg-paliacate-claro px-3 py-2.5 text-sm font-medium text-paliacate-oscuro">{aviso}</p>
         )}
 
+        {avisoImpresion}
+
         {rondas.length === 0 && (
           <p className="rounded-2xl border-2 border-dashed border-borde px-4 py-8 text-center text-cafe-medio">
             Sin productos todavía. Toca <strong>Agregar productos</strong> para empezar.
@@ -320,7 +396,17 @@ export default function VistaMesero({ perfil, cuentaInicial = null }: { perfil: 
               }`}
             >
               <div className="mb-3 flex items-center justify-between">
-                <strong className="font-display text-lg">Ronda {p.numero_ronda}</strong>
+                <span className="flex items-center gap-2">
+                  <strong className="font-display text-lg">Ronda {p.numero_ronda}</strong>
+                  {estadoNorm !== "CANCELADO" && (
+                    <button
+                      onClick={() => imprimirRonda(p.id)}
+                      className="rounded-lg border border-borde px-2 py-1 text-xs font-semibold text-cafe-medio hover:border-cafe-medio"
+                    >
+                      Reimprimir
+                    </button>
+                  )}
+                </span>
                 <span className={`rounded-full px-3 py-1 text-xs font-bold ${ESTILO_ESTADO[estadoNorm] ?? "bg-crema-oscuro text-cafe"}`}>
                   {ETIQUETA_PEDIDO[estadoNorm] || p.estado}
                 </span>
@@ -333,6 +419,7 @@ export default function VistaMesero({ perfil, cuentaInicial = null }: { perfil: 
                       <span className="min-w-0">
                         <span className="font-semibold">{cantidadTexto(d)}</span> {d.nombre_producto}
                         {d.nombre_opcion ? ` (${d.nombre_opcion})` : ""}
+                        {d.con_quesillo && <span className="block text-xs font-semibold text-cafe">+ quesillo</span>}
                         {d.notas ? <em className="block text-xs text-cafe-medio">{d.notas}</em> : null}
                       </span>
                       <span className="flex shrink-0 items-center gap-3">
@@ -442,37 +529,6 @@ export default function VistaMesero({ perfil, cuentaInicial = null }: { perfil: 
           )}
         </div>
 
-        {/* TICKET DE CANCELACIÓN AUTOMÁTICO PARA COCINA */}
-        {ticketCancelacion && (
-          <div id="ticket-impresion" style={{ padding: "4px" }}>
-            <div style={{ textAlign: "center", borderBottom: "2px solid #000", paddingBottom: "4px" }}>
-              <h1 style={{ margin: "0", fontSize: "16px", fontWeight: "900" }}>*** CANCELACIÓN ***</h1>
-              <p style={{ margin: "2px 0", fontSize: "13px", fontWeight: "bold" }}>
-                {ticketCancelacion.cuentaNombre} · Ronda {ticketCancelacion.ronda}
-              </p>
-              <p style={{ margin: "1px 0", fontSize: "11px" }}>Hora: {ticketCancelacion.hora}</p>
-            </div>
-
-            <div style={{ margin: "8px 0", borderBottom: "1px dashed #000", paddingBottom: "6px" }}>
-              <p style={{ margin: "0 0 4px 0", fontSize: "12px", fontWeight: "900" }}>NO PREPARAR:</p>
-              {ticketCancelacion.items.map((it, idx) => (
-                <div key={idx} style={{ fontSize: "13px", margin: "2px 0", fontWeight: "bold" }}>
-                  <span>✖ {it.cantidad} {it.nombre}</span>
-                  {it.notas && <p style={{ margin: "1px 0 0 14px", fontSize: "11px", fontWeight: "normal" }}>({it.notas})</p>}
-                </div>
-              ))}
-            </div>
-
-            <div style={{ fontSize: "11px", marginTop: "4px" }}>
-              <p style={{ margin: "2px 0", fontWeight: "bold" }}>Motivo:</p>
-              <p style={{ margin: "1px 0", fontStyle: "italic" }}>{ticketCancelacion.motivo}</p>
-            </div>
-
-            <div style={{ borderTop: "2px solid #000", marginTop: "8px", paddingTop: "4px", textAlign: "center" }}>
-              <span style={{ fontSize: "12px", fontWeight: "900" }}>DESECHAR / RETIRAR COMANDA</span>
-            </div>
-          </div>
-        )}
       </main>
     );
   }
@@ -494,6 +550,8 @@ export default function VistaMesero({ perfil, cuentaInicial = null }: { perfil: 
         <p className="rounded-xl bg-paliacate-claro px-3 py-2.5 text-sm font-medium text-paliacate-oscuro">{aviso}</p>
       )}
 
+      {avisoImpresion}
+      <BotonImpresora />
       <BotonNotificaciones />
 
       <div className="grid grid-cols-2 gap-1 rounded-2xl bg-crema-oscuro p-1">
@@ -629,7 +687,7 @@ function Captura({
   productos: Producto[];
   opciones: Opcion[];
   onCancelar: () => void;
-  onEnviado: () => void;
+  onEnviado: (pedidoId: string | null) => void;
 }) {
   const supabase = useMemo(() => crearClienteNavegador(), []);
   const [catId, setCatId] = useState<string | null>(null);
@@ -652,7 +710,7 @@ function Captura({
     setLineas((prev) => {
       if (l.producto.unidad === "PIEZA") {
         const i = prev.findIndex(
-          (x) => x.producto.id === l.producto.id && x.opcion?.id === l.opcion?.id && !x.notas
+          (x) => x.producto.id === l.producto.id && x.opcion?.id === l.opcion?.id && x.quesillo === l.quesillo && !x.notas
         );
         if (i >= 0) return prev.map((x, j) => (j === i ? { ...x, cantidad: (x.cantidad ?? 0) + 1 } : x));
       }
@@ -662,12 +720,15 @@ function Captura({
 
   function tocarProducto(p: Producto) {
     if (!p.disponible) return;
-    if (p.requiere_opcion || p.unidad === "KG") return setEligiendo(p);
-    agregar({ producto: p, opcion: null, cantidad: 1 });
+    if (p.requiere_opcion || p.unidad === "KG" || p.pregunta_quesillo) return setEligiendo(p);
+    agregar({ producto: p, opcion: null, cantidad: 1, quesillo: false });
   }
 
+  // Precio del quesillo: el del producto "Quesillo extra" (editable en Admin)
+  const precioQuesillo = Number(productos.find((p) => p.nombre === "Quesillo extra")?.precio ?? 10);
   const importeLinea = (l: Linea) =>
-    l.monto ?? Math.round((l.cantidad ?? 0) * Number(l.producto.precio) * 100) / 100;
+    l.monto ??
+    Math.round((l.cantidad ?? 0) * (Number(l.producto.precio) + (l.quesillo ? precioQuesillo : 0)) * 100) / 100;
   const total = lineas.reduce((s, l) => s + importeLinea(l), 0);
 
   // Cuántas piezas de cada producto van en la ronda (para mostrarlo sobre el botón)
@@ -681,13 +742,14 @@ function Captura({
       producto_id: l.producto.id,
       opcion_id: l.opcion?.id ?? null,
       ...(l.monto !== undefined ? { monto: l.monto } : { cantidad: l.cantidad }),
+      quesillo: l.quesillo,
       notas: l.notas || null,
     }));
-    const { error } = await supabase.rpc("enviar_pedido", { p_cuenta_id: cuenta.id, p_items: items });
+    const { data: pedidoId, error } = await supabase.rpc("enviar_pedido", { p_cuenta_id: cuenta.id, p_items: items });
     setEnviando(false);
     if (error) return setError(errorTexto(error));
     setLineas([]);
-    onEnviado();
+    onEnviado((pedidoId as string) ?? null);
   }
 
   return (
@@ -736,6 +798,7 @@ function Captura({
                   </span>
                 )}
                 <span className="block pr-6 font-semibold leading-snug">{p.nombre}</span>
+                {p.descripcion && <span className="mt-0.5 block text-xs leading-snug text-cafe-medio">{p.descripcion}</span>}
                 <span className="mt-1 block text-sm text-cafe-medio">
                   {p.disponible ? `${dinero(p.precio)}${p.unidad === "KG" ? " / kg" : ""}` : "Agotado"}
                 </span>
@@ -759,6 +822,9 @@ function Captura({
                   {l.producto.nombre}
                   {l.opcion ? ` (${l.opcion.nombre})` : ""}
                 </span>
+                {l.quesillo && (
+                  <span className="ml-1.5 rounded-full bg-queso px-2 py-0.5 text-xs font-bold text-cafe">+ quesillo</span>
+                )}
                 <span className="block text-xs text-cafe-medio">
                   {l.producto.unidad === "KG"
                     ? l.monto !== undefined
@@ -841,10 +907,11 @@ function Captura({
       {eligiendo && (
         <Selector
           producto={eligiendo}
+          precioQuesillo={precioQuesillo}
           opciones={opciones.filter((o) => o.producto_id === eligiendo.id)}
           onCerrar={() => setEligiendo(null)}
           onElegir={(l) => {
-            agregar({ producto: eligiendo, ...l });
+            agregar({ producto: eligiendo, quesillo: false, ...l });
             setEligiendo(null);
           }}
         />
@@ -853,21 +920,85 @@ function Captura({
   );
 }
 
-// Ventana para elegir guisado o capturar peso / monto
+// Ventana para elegir guisado, peso/monto y quesillo.
+// • Opciones "A con B" (ej. "Campechano con Maciza") se agrupan en un submenú "A".
+// • Opciones "A y B" (ej. "Maciza y Cuerito") se eligen tocando 2 ingredientes.
+// • Si el platillo pregunta quesillo, al final se elige Sí / No (obligatorio).
 function Selector({
   producto,
   opciones,
+  precioQuesillo,
   onCerrar,
   onElegir,
 }: {
   producto: Producto;
   opciones: Opcion[];
+  precioQuesillo: number;
   onCerrar: () => void;
-  onElegir: (l: { opcion: Opcion | null; cantidad?: number; monto?: number }) => void;
+  onElegir: (l: { opcion: Opcion | null; cantidad?: number; monto?: number; quesillo?: boolean }) => void;
 }) {
   const [peso, setPeso] = useState("");
   const [monto, setMonto] = useState("");
+  const [grupoAbierto, setGrupoAbierto] = useState<string | null>(null);
+  const [pareja, setPareja] = useState<string[]>([]);
+  // Opción ya elegida, esperando la respuesta de quesillo
+  const [pendiente, setPendiente] = useState<{ opcion: Opcion | null } | null>(
+    !producto.requiere_opcion && producto.unidad === "PIEZA" ? { opcion: null } : null
+  );
   const precio = Number(producto.precio);
+
+  // ¿Es un platillo de "elige 2"? (todas sus opciones son "A y B")
+  const combinado = useMemo(() => {
+    if (opciones.length < 3 || !opciones.every((o) => o.nombre.includes(" y "))) return null;
+    const ingredientes: string[] = [];
+    const porPareja = new Map<string, Opcion>();
+    opciones.forEach((o) => {
+      const [a, b] = o.nombre.split(" y ");
+      [a, b].forEach((x) => !ingredientes.includes(x) && ingredientes.push(x));
+      porPareja.set([a, b].sort().join("|"), o);
+    });
+    return { ingredientes, porPareja };
+  }, [opciones]);
+
+  // Agrupar "Campechano con Maciza"... bajo "Campechano"
+  const { sueltas, grupos } = useMemo(() => {
+    const porPrefijo = new Map<string, { opcion: Opcion; detalle: string }[]>();
+    opciones.forEach((o) => {
+      const i = o.nombre.indexOf(" con ");
+      if (i > 0) {
+        const grupo = o.nombre.slice(0, i);
+        const lista = porPrefijo.get(grupo) ?? [];
+        lista.push({ opcion: o, detalle: o.nombre.slice(i + 5) });
+        porPrefijo.set(grupo, lista);
+      }
+    });
+    const grupos = new Map([...porPrefijo].filter(([, l]) => l.length >= 2));
+    const enGrupo = new Set([...grupos.values()].flat().map((x) => x.opcion.id));
+    return { sueltas: opciones.filter((o) => !enGrupo.has(o.id)), grupos };
+  }, [opciones]);
+
+  // Al elegir la opción: si pregunta quesillo, pasa al paso de quesillo; si no, agrega
+  function elegirOpcion(opcion: Opcion | null) {
+    if (producto.pregunta_quesillo) setPendiente({ opcion });
+    else onElegir({ opcion, cantidad: 1 });
+  }
+
+  function tocarIngrediente(ing: string) {
+    if (!combinado) return;
+    const nueva = pareja.includes(ing) ? pareja.filter((x) => x !== ing) : [...pareja, ing].slice(-2);
+    setPareja(nueva);
+    if (nueva.length === 2) {
+      const o = combinado.porPareja.get([...nueva].sort().join("|"));
+      if (o) setTimeout(() => elegirOpcion(o), 120);
+    }
+  }
+
+  const botonOpcion = "rounded-2xl border-2 border-borde bg-white py-5 text-lg font-semibold active:scale-[0.97]";
+  const titulo = pendiente?.opcion
+    ? `${producto.nombre} (${pendiente.opcion.nombre})`
+    : grupoAbierto
+    ? `${producto.nombre} ${grupoAbierto.toLowerCase()}`
+    : producto.nombre;
 
   return (
     <div className="fixed inset-0 z-10 flex items-end justify-center bg-cafe/50 sm:items-center" onClick={onCerrar}>
@@ -875,28 +1006,109 @@ function Selector({
         className="max-h-[90vh] w-full max-w-md space-y-4 overflow-y-auto rounded-t-3xl bg-crema p-5 shadow-xl sm:rounded-3xl"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-baseline justify-between">
-          <h3 className="font-display text-2xl font-extrabold">{producto.nombre}</h3>
-          <span className="text-sm text-cafe-medio">
+        <div className="flex items-baseline justify-between gap-3">
+          <h3 className="font-display text-2xl font-extrabold leading-tight">{titulo}</h3>
+          <span className="shrink-0 text-sm text-cafe-medio">
             {dinero(precio)}
             {producto.unidad === "KG" ? " / kg" : ""}
           </span>
         </div>
+        {producto.descripcion && !pendiente && <p className="-mt-2 text-sm text-cafe-medio">{producto.descripcion}</p>}
 
-        {producto.requiere_opcion && (
-          <div className="grid grid-cols-2 gap-2.5">
-            {opciones.map((o) => (
+        {/* Paso final: quesillo */}
+        {pendiente && (
+          <>
+            <p className="text-base font-semibold">¿Con quesillo?</p>
+            <div className="grid grid-cols-2 gap-2.5">
               <button
-                key={o.id}
-                className="rounded-2xl border-2 border-borde bg-white py-5 text-lg font-semibold active:scale-[0.97]"
-                onClick={() => onElegir({ opcion: o, cantidad: 1 })}
+                className="rounded-2xl border-2 border-queso bg-queso-claro py-6 text-lg font-bold active:scale-[0.97]"
+                onClick={() => onElegir({ opcion: pendiente.opcion, cantidad: 1, quesillo: true })}
               >
+                Sí
+                <span className="block text-sm font-semibold text-cafe-medio">+{dinero(precioQuesillo)}</span>
+              </button>
+              <button
+                className="rounded-2xl border-2 border-borde bg-white py-6 text-lg font-bold active:scale-[0.97]"
+                onClick={() => onElegir({ opcion: pendiente.opcion, cantidad: 1, quesillo: false })}
+              >
+                No
+              </button>
+            </div>
+            {producto.requiere_opcion && (
+              <button
+                className="w-full rounded-xl border-2 border-cafe bg-white py-3 font-semibold active:bg-crema-oscuro"
+                onClick={() => {
+                  setPendiente(null);
+                  setPareja([]);
+                }}
+              >
+                ‹ Regresar
+              </button>
+            )}
+          </>
+        )}
+
+        {/* Elige 2 ingredientes */}
+        {!pendiente && producto.requiere_opcion && combinado && (
+          <>
+            <p className="text-sm font-semibold">Elige 2 ingredientes ({pareja.length}/2)</p>
+            <div className="grid grid-cols-2 gap-2.5">
+              {combinado.ingredientes.map((ing) => (
+                <button
+                  key={ing}
+                  className={`rounded-2xl border-2 py-5 text-lg font-semibold active:scale-[0.97] ${
+                    pareja.includes(ing) ? "border-paliacate bg-paliacate text-white" : "border-borde bg-white"
+                  }`}
+                  onClick={() => tocarIngrediente(ing)}
+                >
+                  {ing}
+                </button>
+              ))}
+            </div>
+          </>
+        )}
+
+        {/* Submenú "A con B" */}
+        {!pendiente && producto.requiere_opcion && !combinado && grupoAbierto && (
+          <>
+            <p className="text-sm text-cafe-medio">¿Con qué lo quiere?</p>
+            <div className="grid grid-cols-2 gap-2.5">
+              {(grupos.get(grupoAbierto) ?? []).map(({ opcion, detalle }) => (
+                <button key={opcion.id} className={botonOpcion} onClick={() => elegirOpcion(opcion)}>
+                  {detalle}
+                </button>
+              ))}
+            </div>
+            <button
+              className="w-full rounded-xl border-2 border-cafe bg-white py-3 font-semibold active:bg-crema-oscuro"
+              onClick={() => setGrupoAbierto(null)}
+            >
+              ‹ Regresar
+            </button>
+          </>
+        )}
+
+        {/* Opciones normales */}
+        {!pendiente && producto.requiere_opcion && !combinado && !grupoAbierto && (
+          <div className="grid grid-cols-2 gap-2.5">
+            {sueltas.map((o) => (
+              <button key={o.id} className={botonOpcion} onClick={() => elegirOpcion(o)}>
                 {o.nombre}
+              </button>
+            ))}
+            {[...grupos.keys()].map((g) => (
+              <button
+                key={g}
+                className="rounded-2xl border-2 border-cafe bg-queso-claro py-5 text-lg font-semibold active:scale-[0.97]"
+                onClick={() => setGrupoAbierto(g)}
+              >
+                {g} ›
               </button>
             ))}
           </div>
         )}
 
+        {/* Por kilo */}
         {producto.unidad === "KG" && (
           <>
             <div className="grid grid-cols-4 gap-2">
@@ -923,9 +1135,7 @@ function Selector({
                 <button
                   className="rounded-xl bg-paliacate px-5 font-semibold text-white disabled:opacity-40"
                   disabled={!(Number(peso) > 0)}
-                  onClick={() =>
-                    onElegir({ opcion: null, cantidad: Math.round(Number(peso) * 1000) / 1000 })
-                  }
+                  onClick={() => onElegir({ opcion: null, cantidad: Math.round(Number(peso) * 1000) / 1000 })}
                 >
                   Agregar
                 </button>
@@ -944,9 +1154,7 @@ function Selector({
                 <button
                   className="rounded-xl bg-paliacate px-5 font-semibold text-white disabled:opacity-40"
                   disabled={!(Number(monto) > 0)}
-                  onClick={() =>
-                    onElegir({ opcion: null, monto: Math.round(Number(monto) * 100) / 100 })
-                  }
+                  onClick={() => onElegir({ opcion: null, monto: Math.round(Number(monto) * 100) / 100 })}
                 >
                   Agregar
                 </button>

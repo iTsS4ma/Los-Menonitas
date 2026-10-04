@@ -45,7 +45,8 @@
 }
 
 /* ========================================================= */
-/* FORMATO PARA IMPRESIÓN DE TICKETS TÉRMICOS / COMANDAS    */
+/* IMPRESIÓN DE TICKETS — IMPRESORA TÉRMICA DE 58 mm         */
+/* (área imprimible real: 48 mm)                             */
 /* ========================================================= */
 @media print {
   @page {
@@ -94,11 +95,7 @@
     print-color-adjust: exact !important;
   }
 }
-  @page {
-    size: auto;
-    margin: 8mm;
-  }
-}
+
 /* El ticket permanece en el DOM (necesario en celulares) pero no se ve en pantalla */
 @media screen {
   #ticket-impresion,

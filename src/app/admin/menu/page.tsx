@@ -46,6 +46,7 @@ export default function MenuPage() {
   function nuevoProducto(categoria_id: string) {
     setEditando({
       id: "", categoria_id, nombre: "", precio: 0, unidad: "PIEZA", requiere_opcion: false,
+      descripcion: "", pregunta_quesillo: false,
       disponible: true, activo: true, orden: productos.filter((p) => p.categoria_id === categoria_id).length + 1,
     });
   }
@@ -54,6 +55,7 @@ export default function MenuPage() {
     const datos = {
       categoria_id: p.categoria_id, nombre: p.nombre.trim(), precio: Number(p.precio), unidad: p.unidad,
       requiere_opcion: p.requiere_opcion, disponible: p.disponible, activo: p.activo, orden: p.orden,
+      descripcion: p.descripcion?.trim() || null, pregunta_quesillo: !!p.pregunta_quesillo,
     };
     const ok = await ejecutar(
       p.id ? supabase.from("productos").update(datos).eq("id", p.id) : supabase.from("productos").insert(datos)
@@ -114,6 +116,9 @@ export default function MenuPage() {
                         <span className="rounded-full bg-paliacate-claro px-2 py-0.5 text-xs font-semibold text-paliacate-oscuro">Agotado</span>
                       )}
                       {!p.activo && <span className="text-xs no-underline">(oculto)</span>}
+                      {p.pregunta_quesillo && (
+                        <span className="rounded-full bg-queso-claro px-2 py-0.5 text-xs font-semibold">pregunta quesillo</span>
+                      )}
                     </span>
                     <span className="flex gap-2">
                       <button
@@ -129,6 +134,7 @@ export default function MenuPage() {
                       </button>
                     </span>
                   </div>
+                  {p.descripcion && <p className="mt-0.5 text-sm text-cafe-medio">{p.descripcion}</p>}
                   {p.requiere_opcion && (
                     <Opciones producto={p} opciones={opciones.filter((o) => o.producto_id === p.id)} ejecutar={ejecutar} />
                   )}
@@ -190,6 +196,8 @@ function Formulario({ producto, categorias, onCerrar, onGuardar }: {
             </select>
           </label>
         </div>
+        <label className="block text-sm font-semibold">Descripción (la ven mesero y cocina)<input value={p.descripcion ?? ""} onChange={(e) => cambiar("descripcion", e.target.value)} placeholder="Ej. Queso con maciza" className={campo} /></label>
+        <label className="flex items-center gap-2 text-sm"><input type="checkbox" className="h-4 w-4 accent-paliacate" checked={!!p.pregunta_quesillo} onChange={(e) => cambiar("pregunta_quesillo", e.target.checked)} />Preguntar si lleva quesillo (+$10)</label>
         <label className="flex items-center gap-2 text-sm"><input type="checkbox" className="h-4 w-4 accent-paliacate" checked={p.requiere_opcion} onChange={(e) => cambiar("requiere_opcion", e.target.checked)} />Obliga a elegir opción (ej. guisado)</label>
         <label className="flex items-center gap-2 text-sm"><input type="checkbox" className="h-4 w-4 accent-paliacate" checked={p.activo} onChange={(e) => cambiar("activo", e.target.checked)} />Visible en el menú</label>
         <label className="block text-sm font-semibold">Orden en la lista<input inputMode="numeric" value={p.orden} onChange={(e) => cambiar("orden", Number(e.target.value))} className={`${campo} w-24`} /></label>

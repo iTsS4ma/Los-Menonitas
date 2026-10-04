@@ -1,10 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import Conexion from "@/components/Conexion";
 import { useTiempoReal } from "@/hooks/useTiempoReal";
 import { crearClienteNavegador } from "@/lib/supabase/client";
-import { cantidadTexto, diaMX, minutosDesde, nombreCuenta } from "@/lib/formato";
+import { cantidadTexto, minutosDesde, nombreCuenta } from "@/lib/formato";
 import type { Pedido } from "@/lib/tipos";
 import { avisarPedidoListo } from "./acciones";
 
@@ -12,58 +12,21 @@ export default function VistaCocina() {
   const supabase = useMemo(() => crearClienteNavegador(), []);
   const [pedidos, setPedidos] = useState<Pedido[]>([]);
   const [ahora, setAhora] = useState(Date.now());
-  const [ticketActual, setTicketActual] = useState<Pedido | null>(null);
-
-  // Registro de rondas para controlar qué se imprime
-  const idsProcesadosRef = useRef<Set<string>>(new Set());
-  const inicializadoRef = useRef(false);
-
-  // Cola: si llegan varias rondas juntas, se imprimen todas en orden
-  const [cola, setCola] = useState<Pedido[]>([]);
-  const imprimirComanda = (pedido: Pedido) => {
-    setCola((prev) => [...prev, pedido]);
-  };
 
   const cargar = useCallback(async () => {
     const { data } = await supabase
       .from("pedidos")
-      .select("*, cuentas(*, mesas(numero)), detalle_pedido(*)")
+      .select("*, cuentas(*, mesas(numero)), detalle_pedido(*, productos(descripcion))")
       .in("estado", ["ENVIADO", "PREPARANDO"])
       .order("creado_en");
 
     if (data) {
       const lista = data as Pedido[];
       setPedidos(lista);
-
-      // En la primera carga registramos los existentes para no imprimir pedidos viejos
-      if (!inicializadoRef.current) {
-        lista.forEach((p) => idsProcesadosRef.current.add(p.id));
-        inicializadoRef.current = true;
-        return;
-      }
-
-      // Si entra una orden nueva que no esté registrada
-      const nuevos = lista.filter((p) => !idsProcesadosRef.current.has(p.id));
-      nuevos.forEach((nuevo) => {
-        idsProcesadosRef.current.add(nuevo.id);
-        imprimirComanda(nuevo);
-      });
     }
   }, [supabase]);
 
   const conectado = useTiempoReal("cocina", ["pedidos", "detalle_pedido"], cargar);
-
-  // El ticket no se borra al imprimir (en celulares window.print() no espera);
-  // se reemplaza por el siguiente de la cola.
-  useEffect(() => {
-    if (cola.length === 0) return;
-    setTicketActual(cola[0]);
-    const timer = setTimeout(() => {
-      window.print();
-      setCola((prev) => prev.slice(1));
-    }, 300);
-    return () => clearTimeout(timer);
-  }, [cola]);
 
   // Actualiza minutos transcurridos cada 10s
   useEffect(() => {
@@ -110,11 +73,14 @@ export default function VistaCocina() {
     <main className="mx-auto w-full max-w-6xl space-y-4 p-4">
       <Conexion conectado={conectado} />
 
-      <div className="border-b pb-3">
-        <h1 className="text-2xl font-bold">Cocina</h1>
-        <span className="text-sm text-slate-500">
-          {pedidos.length} {pedidos.length === 1 ? "pedido pendiente" : "pedidos pendientes"}
-        </span>
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b pb-3">
+        <div>
+          <h1 className="text-2xl font-bold">Cocina</h1>
+          <span className="text-sm text-slate-500">
+            {pedidos.length} {pedidos.length === 1 ? "pedido pendiente" : "pedidos pendientes"}
+          </span>
+        </div>
+
       </div>
 
       {pedidos.length === 0 ? (
@@ -165,6 +131,14 @@ export default function VistaCocina() {
                             {cantidadTexto(d)} {d.nombre_producto}
                             {d.nombre_opcion ? ` (${d.nombre_opcion})` : ""}
                           </div>
+                          {d.productos?.descripcion && (
+                            <p className="text-xs text-slate-500">{d.productos.descripcion}</p>
+                          )}
+                          {d.con_quesillo && (
+                            <p className="mt-0.5 inline-block rounded bg-yellow-200 px-2 py-0.5 text-xs font-bold text-slate-900">
+                              + CON QUESILLO
+                            </p>
+                          )}
                           {d.notas && (
                             <p className="mt-0.5 rounded bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-900">
                               Nota: {d.notas}
@@ -177,14 +151,6 @@ export default function VistaCocina() {
 
                 <div className="mt-6 space-y-2 border-t pt-3">
                   <button
-                    type="button"
-                    onClick={() => imprimirComanda(p)}
-                    className="w-full rounded-lg border border-slate-300 bg-slate-50 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
-                  >
-                    🖨️ Reimprimir ticket
-                  </button>
-
-                  <button
                     onClick={() => marcarListo(p)}
                     className="w-full rounded-lg bg-emerald-600 py-3 text-lg font-bold text-white transition hover:bg-emerald-700 active:scale-[0.99]"
                   >
@@ -194,42 +160,6 @@ export default function VistaCocina() {
               </div>
             );
           })}
-        </div>
-      )}
-
-      {/* Ticket térmico formateado para impresión */}
-      {ticketActual && (
-        <div id="ticket-impresion">
-          <div style={{ textAlign: "center", borderBottom: "2px dashed #000", paddingBottom: "6px", marginBottom: "8px" }}>
-            <h1 style={{ margin: "0", fontSize: "22px", fontWeight: "900", letterSpacing: "0.5px" }}>
-              {ticketActual.cuentas ? nombreCuenta(ticketActual.cuentas) : "COMANDA"}
-            </h1>
-            <p style={{ margin: "4px 0 0 0", fontSize: "14px", fontWeight: "bold" }}>
-              Ronda #{ticketActual.numero_ronda} · {diaMX()}
-            </p>
-          </div>
-
-          <div style={{ margin: "10px 0" }}>
-            {ticketActual.detalle_pedido
-              ?.filter((d) => d.estado === "ACTIVO")
-              .map((d) => (
-                <div key={d.id} style={{ marginBottom: "10px" }}>
-                  <div style={{ fontWeight: "bold", fontSize: "16px" }}>
-                    {cantidadTexto(d)} {d.nombre_producto}
-                    {d.nombre_opcion ? ` (${d.nombre_opcion})` : ""}
-                  </div>
-                  {d.notas && (
-                    <div style={{ fontSize: "13px", fontWeight: "bold", fontStyle: "italic", marginLeft: "12px", marginTop: "2px" }}>
-                      * {d.notas}
-                    </div>
-                  )}
-                </div>
-              ))}
-          </div>
-
-          <div style={{ borderTop: "2px dashed #000", paddingTop: "6px", textAlign: "center", fontSize: "12px", fontWeight: "bold" }}>
-            --- FIN COMANDA ---
-          </div>
         </div>
       )}
     </main>

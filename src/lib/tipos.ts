@@ -9,12 +9,16 @@ export type Opcion = { id: string; producto_id: string; nombre: string; activo: 
 export type Producto = {
   id: string; categoria_id: string; nombre: string; precio: number; unidad: Unidad;
   requiere_opcion: boolean; disponible: boolean; activo: boolean; orden: number;
+  descripcion?: string | null; pregunta_quesillo?: boolean;
 };
 export type Detalle = {
   id: string; pedido_id: string; producto_id: string; nombre_producto: string;
   nombre_opcion: string | null; cantidad: number; unidad: Unidad; precio_unitario: number;
   modo_captura: "CANTIDAD" | "PESO" | "MONTO"; importe: number; notas: string | null;
   estado: "ACTIVO" | "CANCELADO"; motivo_cancelacion: string | null;
+  con_quesillo?: boolean;
+  // Solo viene cuando la consulta hace join con productos
+  productos?: { descripcion: string | null } | null;
 };
 export type Pedido = {
   id: string; cuenta_id: string; numero_ronda: number; estado: EstadoPedido;
