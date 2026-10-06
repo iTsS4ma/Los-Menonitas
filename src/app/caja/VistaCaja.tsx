@@ -474,7 +474,7 @@ export default function VistaCaja({
 
                 <div className="space-y-2">
                   <span className="text-sm font-semibold">Método de pago</span>
-                  <div className="grid grid-cols-2 gap-1 rounded-xl bg-crema-oscuro p-1 sm:grid-cols-4">
+                  <div className="grid grid-cols-2 gap-1 rounded-xl bg-crema-oscuro p-1">
                     {(["EFECTIVO", "TARJETA", "TRANSFERENCIA", "PREFERENTE"] as MetodoPago[]).map((m) => (
                       <button
                         key={m}
