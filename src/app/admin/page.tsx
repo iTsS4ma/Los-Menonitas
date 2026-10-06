@@ -27,6 +27,7 @@ const ETIQUETA_METODO: Record<string, string> = {
   EFECTIVO: "Efectivo",
   TARJETA: "Tarjeta",
   TRANSFERENCIA: "Transferencia",
+  PREFERENTE: "Preferente",
 };
 
 // Día (YYYY-MM-DD) en hora de CDMX, para que las ventas de la noche no caigan en el día siguiente
@@ -122,12 +123,19 @@ export default function PaginaAdmin() {
 
   // Totales por método
   const resumen = useMemo(() => {
-    const r = { total: 0, EFECTIVO: 0, TARJETA: 0, TRANSFERENCIA: 0 };
+    const r = { total: 0, cobradas: 0, EFECTIVO: 0, TARJETA: 0, TRANSFERENCIA: 0, PREFERENTE: 0, preferentes: 0 };
     cuentasCerradas.forEach((c) => {
       const monto = totalDe(c);
+      // Preferente: se consumió pero no se cobró; no suma a lo vendido
+      if (c.metodo_pago === "PREFERENTE") {
+        r.PREFERENTE += monto;
+        r.preferentes += 1;
+        return;
+      }
       r.total += monto;
+      r.cobradas += 1;
       const metodo = (c.metodo_pago ?? "EFECTIVO") as keyof typeof r;
-      if (metodo in r && metodo !== "total") r[metodo] += monto;
+      if (metodo === "EFECTIVO" || metodo === "TARJETA" || metodo === "TRANSFERENCIA") r[metodo] += monto;
     });
     return r;
   }, [cuentasCerradas]);
@@ -217,12 +225,12 @@ export default function PaginaAdmin() {
       )}
 
       {/* Totales */}
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
         <div className="rounded-2xl bg-cafe p-5 text-crema">
           <span className="text-sm text-crema/75">Vendido</span>
           <p className="mt-1 font-display text-3xl font-extrabold tabular-nums">{dinero(resumen.total)}</p>
           <span className="text-xs text-crema/60">
-            {cuentasCerradas.length} {cuentasCerradas.length === 1 ? "cuenta cobrada" : "cuentas cobradas"}
+            {resumen.cobradas} {resumen.cobradas === 1 ? "cuenta cobrada" : "cuentas cobradas"}
           </span>
         </div>
         {(["EFECTIVO", "TARJETA", "TRANSFERENCIA"] as const).map((m) => (
@@ -231,6 +239,13 @@ export default function PaginaAdmin() {
             <p className="mt-1 font-display text-2xl font-bold tabular-nums">{dinero(resumen[m])}</p>
           </div>
         ))}
+        <div className="rounded-2xl border border-dashed border-cafe/40 bg-crema p-5">
+          <span className="text-sm text-cafe-medio">Preferente (sin cobro)</span>
+          <p className="mt-1 font-display text-2xl font-bold tabular-nums">{dinero(resumen.PREFERENTE)}</p>
+          <span className="text-xs text-cafe-medio">
+            {resumen.preferentes} {resumen.preferentes === 1 ? "cuenta" : "cuentas"} · no suma a lo vendido
+          </span>
+        </div>
       </div>
 
       {/* Productos más vendidos */}

@@ -41,6 +41,10 @@ function horaActualMX() {
   }).format(new Date());
 }
 
+// Cuenta que todavía no existe en la base: se crea al mandar la primera ronda
+type Borrador = { tipo: "MESA"; mesa: Mesa } | { tipo: "PARA_LLEVAR"; nombre: string };
+type Destino = { cuentaId: string } | Borrador;
+
 export default function VistaMesero({ perfil, cuentaInicial = null }: { perfil: Perfil; cuentaInicial?: string | null }) {
   const supabase = useMemo(() => crearClienteNavegador(), []);
   const [mesas, setMesas] = useState<Mesa[]>([]);
@@ -51,6 +55,7 @@ export default function VistaMesero({ perfil, cuentaInicial = null }: { perfil: 
   const [pestana, setPestana] = useState<"MESAS" | "LLEVAR">("MESAS");
   const [cuentaId, setCuentaId] = useState<string | null>(cuentaInicial);
   const [capturando, setCapturando] = useState(false);
+  const [borrador, setBorrador] = useState<Borrador | null>(null);
   const [aviso, setAviso] = useState("");
   const [solicitandoCuenta, setSolicitandoCuenta] = useState(false);
 
@@ -182,31 +187,20 @@ export default function VistaMesero({ perfil, cuentaInicial = null }: { perfil: 
     return !error;
   }
 
-  async function abrirMesa(mesa: Mesa) {
+  // La cuenta NO se crea aquí: se crea cuando el mesero manda la primera ronda.
+  // Si se arrepiente antes de mandar, no queda nada registrado.
+  function abrirMesa(mesa: Mesa) {
+    setAviso("");
     const existente = cuentas.find((c) => c.mesa_id === mesa.id);
     if (existente) return setCuentaId(existente.id);
-    const { data, error } = await supabase
-      .from("cuentas")
-      .insert({ tipo: "MESA", mesa_id: mesa.id, mesero_id: perfil.id })
-      .select("id")
-      .single();
-    if (error) return setAviso(errorTexto(error));
-    await cargar();
-    setCuentaId(data.id);
-    setCapturando(true);
+    setBorrador({ tipo: "MESA", mesa });
   }
 
-  async function nuevaParaLlevar() {
-    const nombre = window.prompt("Nombre del cliente (opcional)") ?? "";
-    const { data, error } = await supabase
-      .from("cuentas")
-      .insert({ tipo: "PARA_LLEVAR", nombre_cliente: nombre.trim() || null, mesero_id: perfil.id })
-      .select("id")
-      .single();
-    if (error) return setAviso(errorTexto(error));
-    await cargar();
-    setCuentaId(data.id);
-    setCapturando(true);
+  function nuevaParaLlevar() {
+    setAviso("");
+    const nombre = window.prompt("Nombre del cliente (opcional)");
+    if (nombre === null) return; // tocó Cancelar
+    setBorrador({ tipo: "PARA_LLEVAR", nombre: nombre.trim() });
   }
 
   // Cancelar un producto individual e imprimir ticket en cocina
@@ -278,11 +272,36 @@ export default function VistaMesero({ perfil, cuentaInicial = null }: { perfil: 
     await cargar();
   }
 
+  // ---------- Vista: captura de una cuenta nueva (todavía sin crear) ----------
+  if (borrador) {
+    return (
+      <Captura
+        titulo={
+          borrador.tipo === "MESA"
+            ? `Mesa ${borrador.mesa.numero}`
+            : `Para llevar${borrador.nombre ? ` · ${borrador.nombre}` : ""}`
+        }
+        destino={borrador}
+        categorias={categorias}
+        productos={productos}
+        opciones={opciones}
+        onCancelar={() => setBorrador(null)}
+        onEnviado={async (pedidoId, nuevaCuentaId) => {
+          setBorrador(null);
+          await cargar();
+          setCuentaId(nuevaCuentaId);
+          if (pedidoId) imprimirRonda(pedidoId);
+        }}
+      />
+    );
+  }
+
   // ---------- Vista: captura de productos ----------
   if (cuenta && capturando) {
     return (
       <Captura
-        cuenta={cuenta}
+        titulo={nombreCuenta(cuenta)}
+        destino={{ cuentaId: cuenta.id }}
         categorias={categorias}
         productos={productos}
         opciones={opciones}
@@ -312,6 +331,12 @@ export default function VistaMesero({ perfil, cuentaInicial = null }: { perfil: 
         >
           <span aria-hidden className="text-xl leading-none">‹</span> Regresar a las mesas
         </button>
+
+        {total === 0 && (
+          <div className="rounded-2xl border-2 border-queso bg-queso-claro px-4 py-3 text-sm">
+            <strong>Esta cuenta quedó en $0.</strong> Agrega productos o pide a caja que la cancele.
+          </div>
+        )}
 
         <div className="flex items-end justify-between rounded-2xl border border-borde bg-white px-4 py-4">
           <div>
@@ -442,22 +467,6 @@ export default function VistaMesero({ perfil, cuentaInicial = null }: { perfil: 
             </Link>
           )}
 
-          {(total === 0 || perfil.rol === "ADMIN") && (
-            <button
-              className="py-2 text-sm font-medium text-paliacate underline-offset-4 hover:underline"
-              onClick={async () => {
-                if (!window.confirm("¿Cancelar la cuenta completa?")) return;
-                if (
-                  await ejecutar(() =>
-                    supabase.from("cuentas").update({ estado: "CANCELADA" }).eq("id", cuenta.id)
-                  )
-                )
-                  setCuentaId(null);
-              }}
-            >
-              Cancelar cuenta
-            </button>
-          )}
         </div>
 
       </main>
@@ -514,7 +523,7 @@ export default function VistaMesero({ perfil, cuentaInicial = null }: { perfil: 
                   >
                     <span className="font-display text-4xl font-extrabold leading-none">{m.numero}</span>
                     <span className="mt-1.5 text-xs font-semibold">
-                      {c ? (pidioCuenta ? "Cuenta" : dinero(totalCuenta(c.pedidos))) : "Libre"}
+                      {c ? (pidioCuenta ? "Cuenta" : totalCuenta(c.pedidos) === 0 ? "En $0" : dinero(totalCuenta(c.pedidos))) : "Libre"}
                     </span>
                   </button>
                 );
@@ -572,19 +581,21 @@ function Leyenda({ color, texto }: { color: string; texto: string }) {
 // Captura de productos para una ronda
 // =====================================================================
 function Captura({
-  cuenta,
+  titulo,
+  destino,
   categorias,
   productos,
   opciones,
   onCancelar,
   onEnviado,
 }: {
-  cuenta: Cuenta;
+  titulo: string;
+  destino: Destino;
   categorias: Categoria[];
   productos: Producto[];
   opciones: Opcion[];
   onCancelar: () => void;
-  onEnviado: (pedidoId: string | null) => void;
+  onEnviado: (pedidoId: string | null, cuentaId: string) => void;
 }) {
   const supabase = useMemo(() => crearClienteNavegador(), []);
   const [catId, setCatId] = useState<string | null>(null);
@@ -645,11 +656,35 @@ function Captura({
       quesillo: l.quesillo,
       notas: l.notas || null,
     }));
-    const { data: pedidoId, error } = await supabase.rpc("enviar_pedido", { p_cuenta_id: cuenta.id, p_items: items });
+    let pedidoId: string | null = null;
+    let cuentaId: string;
+    if ("cuentaId" in destino) {
+      const { data, error } = await supabase.rpc("enviar_pedido", { p_cuenta_id: destino.cuentaId, p_items: items });
+      if (error) {
+        setEnviando(false);
+        return setError(errorTexto(error));
+      }
+      pedidoId = (data as string) ?? null;
+      cuentaId = destino.cuentaId;
+    } else {
+      // Primera ronda: la base crea la cuenta y la ronda juntas (o ninguna, si algo falla)
+      const { data, error } = await supabase.rpc("abrir_cuenta_y_enviar", {
+        p_tipo: destino.tipo,
+        p_mesa_id: destino.tipo === "MESA" ? destino.mesa.id : null,
+        p_nombre: destino.tipo === "PARA_LLEVAR" ? destino.nombre : null,
+        p_items: items,
+      });
+      if (error) {
+        setEnviando(false);
+        return setError(errorTexto(error));
+      }
+      const r = data as { cuenta_id: string; pedido_id: string };
+      pedidoId = r.pedido_id;
+      cuentaId = r.cuenta_id;
+    }
     setEnviando(false);
-    if (error) return setError(errorTexto(error));
     setLineas([]);
-    onEnviado((pedidoId as string) ?? null);
+    onEnviado(pedidoId, cuentaId);
   }
 
   return (
@@ -661,7 +696,7 @@ function Captura({
         >
           ‹ Cancelar
         </button>
-        <strong className="font-display text-xl">{nombreCuenta(cuenta)}</strong>
+        <strong className="font-display text-xl">{titulo}</strong>
       </div>
 
       <div className="sticky top-0 z-[5] -mx-3 mb-3 flex gap-2 overflow-x-auto bg-crema px-3 py-2">

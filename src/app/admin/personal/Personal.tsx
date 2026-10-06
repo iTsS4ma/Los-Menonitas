@@ -3,12 +3,12 @@
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import type { Rol } from "@/lib/perfil";
-import { actualizarPersonal, cambiarPassword, crearPersonal } from "./acciones";
+import { actualizarPersonal, cambiarPassword, crearPersonal, eliminarPersonal } from "./acciones";
 
 export type Persona = { id: string; nombre: string; email: string | null; rol: Rol; puede_cobrar: boolean; activo: boolean };
 
 const ROLES: { valor: Rol; texto: string }[] = [
-  { valor: "MESERO", texto: "Mesero" }, { valor: "COCINA", texto: "Cocina" },
+  { valor: "MESERO", texto: "Mesero" },
   { valor: "CAJERO", texto: "Cajero" }, { valor: "ADMIN", texto: "Administrador" },
 ];
 
@@ -33,7 +33,9 @@ export default function Personal({ personas }: { personas: Persona[] }) {
     <div className="space-y-6">
       <div>
         <h1 className="font-display text-3xl font-extrabold">Personal</h1>
-        <p className="text-sm text-cafe-medio">Desactivar quita el acceso sin borrar su historial de ventas.</p>
+        <p className="text-sm text-cafe-medio">
+          Desactivar quita el acceso por un tiempo. Eliminar lo borra del sistema; sus ventas pasadas conservan su nombre.
+        </p>
       </div>
 
       {mensaje && (
@@ -111,6 +113,16 @@ export default function Personal({ personas }: { personas: Persona[] }) {
                 disabled={pendiente}
                 onClick={() => correr(() => actualizarPersonal(p.id, { activo: !p.activo }), p.activo ? "Acceso desactivado" : "Acceso activado")}>
                 {p.activo ? "Desactivar" : "Activar"}
+              </button>
+              <button
+                className="rounded-lg bg-paliacate px-3 py-1.5 font-semibold text-white hover:bg-paliacate-oscuro disabled:opacity-40"
+                disabled={pendiente}
+                onClick={() => {
+                  if (!window.confirm(`¿Eliminar a ${p.nombre}? Ya no podrá entrar al sistema. Sus ventas pasadas se conservan con su nombre. No se puede deshacer.`)) return;
+                  correr(() => eliminarPersonal(p.id), `${p.nombre} eliminado`);
+                }}
+              >
+                Eliminar
               </button>
             </span>
           </li>

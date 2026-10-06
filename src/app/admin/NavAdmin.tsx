@@ -8,6 +8,7 @@ const PESTANAS = [
   ["/admin/menu", "Menú"],
   ["/admin/mesas", "Mesas"],
   ["/admin/personal", "Personal"],
+  ["/admin/preferente", "Preferente"],
 ];
 
 export default function NavAdmin() {

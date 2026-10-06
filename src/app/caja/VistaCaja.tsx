@@ -7,7 +7,7 @@ import { crearClienteNavegador } from "@/lib/supabase/client";
 import { diaMX, dinero, nombreCuenta, totalCuenta } from "@/lib/formato";
 import type { Cuenta, MetodoPago, DetallePedido, Mesa, Pedido } from "@/lib/tipos";
 import BotonImpresora from "@/components/BotonImpresora";
-import { elegirImpresora, ErrorImpresion, estadoImpresoras, imprimir, ticketCuenta as bytesTicketCuenta } from "@/lib/impresoraBT";
+import { elegirImpresora, ErrorImpresion, estadoImpresoras, imprimir, ticketCuenta as bytesTicketCuenta, DATOS_LOCAL } from "@/lib/impresoraBT";
 
 type ItemAgrupado = {
   nombre: string;
@@ -78,9 +78,17 @@ function agruparProductos(ticketCuenta: Cuenta | null): ItemAgrupado[] {
     return [...mapa.values()];
 }
 
-export default function VistaCaja({ cuentaInicial = null }: { cuentaInicial?: string | null }) {
+export default function VistaCaja({
+  cuentaInicial = null,
+}: {
+  cuentaInicial?: string | null;
+}) {
   const supabase = useMemo(() => crearClienteNavegador(), []);
   const [cuentas, setCuentas] = useState<Cuenta[]>([]);
+  // Cuentas que quedaron en $0 (rondas canceladas): solo se pueden cancelar
+  const [cuentasCero, setCuentasCero] = useState<Cuenta[]>([]);
+  const [codigoPreferente, setCodigoPreferente] = useState("");
+  const [ticketPreferente, setTicketPreferente] = useState(false);
   const [cuentaIdSeleccionada, setCuentaIdSeleccionada] = useState<string | null>(cuentaInicial);
   const [metodo, setMetodo] = useState<MetodoPago>("EFECTIVO");
   const [ticketCuenta, setTicketCuenta] = useState<Cuenta | null>(null);
@@ -93,8 +101,8 @@ export default function VistaCaja({ cuentaInicial = null }: { cuentaInicial?: st
   const [pagoCon, setPagoCon] = useState<string>("");
 
   const seleccionada = useMemo(
-    () => cuentas.find((c) => c.id === cuentaIdSeleccionada) || null,
-    [cuentas, cuentaIdSeleccionada]
+    () => [...cuentas, ...cuentasCero].find((c) => c.id === cuentaIdSeleccionada) || null,
+    [cuentas, cuentasCero, cuentaIdSeleccionada]
   );
 
   const totalCalculado = useMemo(() => {
@@ -102,6 +110,7 @@ export default function VistaCaja({ cuentaInicial = null }: { cuentaInicial?: st
     return totalCuenta(seleccionada.pedidos);
   }, [seleccionada]);
 
+  // Preferente y tarjeta: sin redondeo
   const { total: totalFinalCobro, redondeo } = useMemo(() => {
     return metodo === "EFECTIVO"
       ? calcularRedondeo50Centavos(totalCalculado)
@@ -114,6 +123,7 @@ export default function VistaCaja({ cuentaInicial = null }: { cuentaInicial?: st
 
   useEffect(() => {
     setPagoCon("");
+    setCodigoPreferente("");
   }, [cuentaIdSeleccionada, metodo]);
 
   const cargar = useCallback(async () => {
@@ -129,6 +139,7 @@ export default function VistaCaja({ cuentaInicial = null }: { cuentaInicial?: st
 
     const listaCuentasRaw = (resCuentas.data || []) as (Cuenta & { mesa_id?: string | null })[];
     if (listaCuentasRaw.length === 0) {
+      setCuentasCero([]);
       setCuentas([]);
       setErrorCarga("");
       return;
@@ -153,54 +164,24 @@ export default function VistaCaja({ cuentaInicial = null }: { cuentaInicial?: st
       pedidos: listaPedidos.filter((p) => p.cuenta_id === c.id),
     }));
 
-    const mapaPorMesa = new Map<string, Cuenta>();
-    const cuentasParaLlevar: Cuenta[] = [];
-
-    cuentasCompletas.forEach((c) => {
-      const total = totalCuenta(c.pedidos);
-
-      if (c.tipo === "PARA_LLEVAR" || !c.mesa_id) {
-        if (total > 0 || (c.pedidos && c.pedidos.length > 0)) {
-          cuentasParaLlevar.push(c);
-        }
-      } else {
-        const existente = mapaPorMesa.get(c.mesa_id);
-        if (!existente) {
-          mapaPorMesa.set(c.mesa_id, c);
-        } else {
-          if (c.estado === "CUENTA_SOLICITADA" && existente.estado !== "CUENTA_SOLICITADA") {
-            mapaPorMesa.set(c.mesa_id, c);
-          } else {
-            const totalExistente = totalCuenta(existente.pedidos);
-            if (total > totalExistente) {
-              mapaPorMesa.set(c.mesa_id, c);
-            }
-          }
-        }
-      }
-    });
-
-    const listaFinal = [
-      ...Array.from(mapaPorMesa.values()).filter((c) => totalCuenta(c.pedidos) > 0),
-      ...cuentasParaLlevar,
-    ].sort((a, b) => {
-      const numA = a.mesas?.numero ?? 999;
-      const numB = b.mesas?.numero ?? 999;
-      return numA - numB;
-    });
+    const porMesa = (a: Cuenta, b: Cuenta) => (a.mesas?.numero ?? 999) - (b.mesas?.numero ?? 999);
+    const listaFinal = cuentasCompletas.filter((c) => totalCuenta(c.pedidos) > 0).sort(porMesa);
+    const listaCero = cuentasCompletas.filter((c) => totalCuenta(c.pedidos) === 0).sort(porMesa);
 
     setErrorCarga("");
     setCuentas(listaFinal);
+    setCuentasCero(listaCero);
   }, [supabase]);
 
   const conectado = useTiempoReal("caja", ["cuentas", "pedidos", "detalle_pedido"], cargar);
 
-  const [errorImpresion, setErrorImpresion] = useState<{ cuenta: Cuenta; mensaje: string; sinPermiso: boolean } | null>(null);
+  const [errorImpresion, setErrorImpresion] = useState<{ cuenta: Cuenta; mensaje: string; sinPermiso: boolean; preferente?: boolean } | null>(null);
 
   // Ticket de cuenta: por la impresora Bluetooth de caja si hay una configurada;
   // si no, con la ventana de impresión del navegador.
-  async function iniciarImpresion(cuenta: Cuenta, reconectar = false) {
-    if (cuenta.estado !== "CUENTA_SOLICITADA") return;
+  async function iniciarImpresion(cuenta: Cuenta, reconectar = false, preferente = false) {
+    if (cuenta.estado !== "CUENTA_SOLICITADA" && !preferente) return;
+    setTicketPreferente(preferente);
     const hora = horaActualMX();
     setHoraTicket(hora);
     setTicketCuenta(cuenta);
@@ -219,6 +200,7 @@ export default function VistaCaja({ cuentaInicial = null }: { cuentaInicial?: st
         importe: dinero(it.subtotal),
       })),
       total: dinero(totalCuenta(cuenta.pedidos)),
+      preferente,
     });
     try {
       if (reconectar) await elegirImpresora("caja", true);
@@ -228,6 +210,7 @@ export default function VistaCaja({ cuentaInicial = null }: { cuentaInicial?: st
       setErrorImpresion({
         cuenta,
         mensaje: e instanceof Error ? e.message : "Error al imprimir.",
+        preferente,
         sinPermiso: e instanceof ErrorImpresion && (e.fallidas.length === 0 || e.fallidas.some((f) => f.sinPermiso)),
       });
     }
@@ -274,12 +257,45 @@ export default function VistaCaja({ cuentaInicial = null }: { cuentaInicial?: st
     await cargar();
   }
 
+  // ---------- Preferente: cuenta sin cobro con contraseña de un solo uso ----------
+  async function cerrarPreferente() {
+    if (!seleccionada || !codigoPreferente.trim()) return;
+    setCargando(true);
+    const { error } = await supabase.rpc("cobrar_preferente", {
+      p_cuenta_id: seleccionada.id,
+      p_codigo: codigoPreferente,
+    });
+    setCargando(false);
+    if (error) {
+      alert(error.message.includes("inválida") ? "Contraseña Preferente inválida o ya usada." : `Error: ${error.message}`);
+      return;
+    }
+    const cerrada = seleccionada;
+    setCodigoPreferente("");
+    setCuentaIdSeleccionada(null);
+    await cargar();
+    iniciarImpresion(cerrada, false, true); // ticket con la leyenda "PREFERENTE: SIN COBRO"
+  }
+
+  // ---------- Cuentas en $0: solo se cancelan (desaparecen sin registro) ----------
+  async function cancelarCuentaCero() {
+    if (!seleccionada) return;
+    if (!window.confirm(`¿Cancelar ${nombreCuenta(seleccionada)}? No tiene productos y desaparecerá del sistema.`)) return;
+    setCargando(true);
+    const { error } = await supabase.rpc("cancelar_cuenta_vacia", { p_cuenta_id: seleccionada.id });
+    setCargando(false);
+    if (error) return alert(`No se pudo cancelar: ${error.message}`);
+    setCuentaIdSeleccionada(null);
+    await cargar();
+  }
+
   const pidioCuentaSeleccionada = seleccionada?.estado === "CUENTA_SOLICITADA";
 
   const ETIQUETA_METODO: Record<MetodoPago, string> = {
     EFECTIVO: "Efectivo",
     TARJETA: "Tarjeta",
     TRANSFERENCIA: "Transferencia",
+    PREFERENTE: "Preferente",
   };
 
   return (
@@ -352,6 +368,32 @@ export default function VistaCaja({ cuentaInicial = null }: { cuentaInicial?: st
               })}
             </div>
           )}
+
+          {cuentasCero.length > 0 && (
+            <div className="space-y-3 pt-4">
+              <div className="flex items-baseline justify-between">
+                <h2 className="font-display text-xl font-bold">Cuentas en $0</h2>
+                <span className="text-sm text-cafe-medio">Se cancelaron sus rondas: solo se pueden cancelar</span>
+              </div>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                {cuentasCero.map((c) => {
+                  const activo = seleccionada?.id === c.id;
+                  return (
+                    <button
+                      key={c.id}
+                      onClick={() => setCuentaIdSeleccionada(c.id)}
+                      className={`flex items-center justify-between rounded-2xl border-2 border-dashed p-4 text-left ${
+                        activo ? "border-cafe bg-cafe text-crema" : "border-borde bg-white hover:border-cafe-medio"
+                      }`}
+                    >
+                      <span className="font-display text-lg font-bold">{nombreCuenta(c)}</span>
+                      <span className="font-display text-xl font-bold tabular-nums">{dinero(0)}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
         </section>
 
         {/* Panel de cobro */}
@@ -360,6 +402,23 @@ export default function VistaCaja({ cuentaInicial = null }: { cuentaInicial?: st
             <div className="px-6 py-16 text-center text-cafe-medio">
               <p className="font-display text-lg font-bold text-cafe">Selecciona una cuenta</p>
               <p className="mt-1 text-sm">Aquí verás el total, el ticket y el cobro.</p>
+            </div>
+          ) : totalCalculado === 0 ? (
+            <div className="space-y-4 px-5 py-6">
+              <div>
+                <p className="text-sm text-cafe-medio">{nombreCuenta(seleccionada)}</p>
+                <p className="font-display text-5xl font-extrabold tabular-nums leading-tight">{dinero(0)}</p>
+              </div>
+              <p className="rounded-xl bg-queso-claro px-4 py-3 text-sm">
+                Esta cuenta se quedó sin productos (se cancelaron sus rondas). No hay nada que cobrar.
+              </p>
+              <button
+                disabled={cargando}
+                onClick={cancelarCuentaCero}
+                className="w-full rounded-xl bg-paliacate py-4 text-lg font-semibold text-white shadow-sm transition-colors hover:bg-paliacate-oscuro disabled:opacity-40"
+              >
+                {cargando ? "Cancelando…" : "Cancelar cuenta"}
+              </button>
             </div>
           ) : (
             <div>
@@ -384,7 +443,7 @@ export default function VistaCaja({ cuentaInicial = null }: { cuentaInicial?: st
                     <div className="flex gap-2">
                       <button
                         className="flex-1 rounded-lg bg-paliacate py-2 font-semibold text-white"
-                        onClick={() => iniciarImpresion(errorImpresion.cuenta, errorImpresion.sinPermiso)}
+                        onClick={() => iniciarImpresion(errorImpresion.cuenta, errorImpresion.sinPermiso, errorImpresion.preferente)}
                       >
                         {errorImpresion.sinPermiso ? "Conectar e imprimir" : "Reintentar"}
                       </button>
@@ -415,8 +474,8 @@ export default function VistaCaja({ cuentaInicial = null }: { cuentaInicial?: st
 
                 <div className="space-y-2">
                   <span className="text-sm font-semibold">Método de pago</span>
-                  <div className="grid grid-cols-3 gap-1 rounded-xl bg-crema-oscuro p-1">
-                    {(["EFECTIVO", "TARJETA", "TRANSFERENCIA"] as MetodoPago[]).map((m) => (
+                  <div className="grid grid-cols-2 gap-1 rounded-xl bg-crema-oscuro p-1 sm:grid-cols-4">
+                    {(["EFECTIVO", "TARJETA", "TRANSFERENCIA", "PREFERENTE"] as MetodoPago[]).map((m) => (
                       <button
                         key={m}
                         onClick={() => setMetodo(m)}
@@ -473,13 +532,40 @@ export default function VistaCaja({ cuentaInicial = null }: { cuentaInicial?: st
                   </div>
                 )}
 
-                <button
-                  disabled={cargando || faltaDinero}
-                  onClick={cobrar}
-                  className="w-full rounded-xl bg-paliacate py-4 text-lg font-semibold text-white shadow-sm transition-colors hover:bg-paliacate-oscuro disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  {cargando ? "Procesando…" : `Cobrar ${dinero(totalFinalCobro)}`}
-                </button>
+                {metodo === "PREFERENTE" ? (
+                  <div className="space-y-3 rounded-xl border-2 border-cafe/20 bg-crema p-4">
+                    <label className="block">
+                      <span className="text-sm font-semibold">Contraseña Preferente</span>
+                      <input
+                        value={codigoPreferente}
+                        onChange={(e) => setCodigoPreferente(e.target.value.toUpperCase())}
+                        placeholder="Ej. K7M2PX"
+                        autoCapitalize="characters"
+                        autoComplete="off"
+                        maxLength={10}
+                        className="mt-1 w-full rounded-xl border border-borde bg-white px-3 py-3 text-center font-display text-2xl font-bold uppercase tracking-[0.3em] focus:border-cafe focus:outline-none"
+                      />
+                    </label>
+                    <p className="text-xs text-cafe-medio">
+                      La cuenta se cierra sin cobro y el consumo queda registrado. Cada contraseña sirve una sola vez.
+                    </p>
+                    <button
+                      disabled={cargando || codigoPreferente.trim().length < 6}
+                      onClick={cerrarPreferente}
+                      className="w-full rounded-xl bg-cafe py-4 text-lg font-semibold text-crema shadow-sm transition-colors hover:bg-cafe/90 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      {cargando ? "Validando…" : "Validar y cerrar sin cobro"}
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    disabled={cargando || faltaDinero}
+                    onClick={cobrar}
+                    className="w-full rounded-xl bg-paliacate py-4 text-lg font-semibold text-white shadow-sm transition-colors hover:bg-paliacate-oscuro disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    {cargando ? "Procesando…" : `Cobrar ${dinero(totalFinalCobro)}`}
+                  </button>
+                )}
               </div>
             </div>
           )}
@@ -534,12 +620,11 @@ export default function VistaCaja({ cuentaInicial = null }: { cuentaInicial?: st
               <h1 style={{ margin: "0", fontSize: "18px", fontWeight: "900", letterSpacing: "0.5px" }}>
                 LOS MENONITAS
               </h1>
-              <p style={{ margin: "3px 0 1px 0", fontSize: "11px", lineHeight: "1.2" }}>
-                Norte 72, 3540 colonia la joya
-              </p>
-              <p style={{ margin: "1px 0", fontSize: "11px" }}>
-                CP 07890, GAM, CDMX
-              </p>
+              {DATOS_LOCAL.map((l) => (
+                <p key={l} style={{ margin: "1px 0", fontSize: "11px", lineHeight: "1.2" }}>
+                  {l}
+                </p>
+              ))}
               <div style={{ marginTop: "6px", borderTop: "1px dotted #000", paddingTop: "4px" }}>
                 <p style={{ margin: "1px 0", fontSize: "14px", fontWeight: "bold" }}>
                   {nombreCuenta(ticketCuenta)}
@@ -594,9 +679,14 @@ export default function VistaCaja({ cuentaInicial = null }: { cuentaInicial?: st
 
             <div style={{ borderTop: "1px dashed #000", paddingTop: "6px", padding: "6px 2px 0 2px" }}>
               <div style={{ display: "flex", justifyContent: "space-between", fontSize: "16px", fontWeight: "900" }}>
-                <span>TOTAL:</span>
+                <span>{ticketPreferente ? "CONSUMO:" : "TOTAL:"}</span>
                 <span>{dinero(totalCuenta(ticketCuenta.pedidos))}</span>
               </div>
+              {ticketPreferente && (
+                <p style={{ margin: "6px 0 0 0", fontSize: "13px", fontWeight: "900", textAlign: "center" }}>
+                  PREFERENTE: SIN COBRO
+                </p>
+              )}
               <p style={{ margin: "2px 0 0 0", fontSize: "10px", color: "#333", textAlign: "right" }}>
                 (Consumo total de {ticketCuenta.pedidos?.length || 0} rondas)
               </p>

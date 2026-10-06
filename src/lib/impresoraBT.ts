@@ -6,6 +6,8 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
+import { LOGO_ALTO, LOGO_ANCHO, LOGO_BITS } from "./logoTicket";
+
 export type Destino = "cocina" | "caja";
 
 export type ImpresoraGuardada = { id: string; nombre: string; lista: boolean };
@@ -330,6 +332,17 @@ class Ticket {
   linea(c = "-") { return this.texto(c.repeat(ANCHO)); }
   avanzar(n: number) { this.b.push(ESC, 0x64, n); return this; }
   cortar() { this.b.push(GS, 0x56, 0x42, 0x00); return this; }
+  // Imagen en blanco y negro (GS v 0), en franjas para no saturar la impresora
+  imagen(bits: Uint8Array, ancho: number, alto: number) {
+    const porRenglon = ancho / 8;
+    const FRANJA = 48;
+    for (let y = 0; y < alto; y += FRANJA) {
+      const h = Math.min(FRANJA, alto - y);
+      this.b.push(GS, 0x76, 0x30, 0x00, porRenglon & 0xff, porRenglon >> 8, h & 0xff, h >> 8);
+      for (let i = y * porRenglon; i < (y + h) * porRenglon; i++) this.b.push(bits[i]);
+    }
+    return this;
+  }
   bytes() { return new Uint8Array(this.b); }
 }
 
@@ -365,14 +378,33 @@ export function ticketCancelacion(d: { cuenta: string; ronda: number; hora: stri
   return t.bytes();
 }
 
+// Datos del local para el ticket de cuenta
+export const DATOS_LOCAL = [
+  "Av. Insurgentes Nte. 1681",
+  "Local 6, Tepeyac Insurgentes",
+  "Gustavo A. Madero",
+  "07800 Ciudad de Mexico",
+  "Tel. 56 6506 3395",
+];
+
+function bitsLogo() {
+  const crudo = atob(LOGO_BITS);
+  const bits = new Uint8Array(crudo.length);
+  for (let i = 0; i < crudo.length; i++) bits[i] = crudo.charCodeAt(i);
+  return bits;
+}
+
 export function ticketCuenta(d: {
   cuenta: string;
   fecha: string;
   renglones: { cantidad: string; nombre: string; importe: string }[];
   total: string;
+  preferente?: boolean;
 }) {
-  const t = new Ticket().centro().grande().negrita(true).texto("LOS MENONITAS").normal().negrita(false);
-  t.texto("Norte 72, 3540 colonia la joya").texto("CP 07890, GAM, CDMX").linea();
+  const t = new Ticket().centro().imagen(bitsLogo(), LOGO_ANCHO, LOGO_ALTO);
+  t.grande().negrita(true).texto("LOS MENONITAS").normal().negrita(false);
+  DATOS_LOCAL.forEach((l) => t.texto(l));
+  t.linea();
   t.negrita(true).texto(d.cuenta).negrita(false).texto(d.fecha).izquierda().linea();
   d.renglones.forEach((r) => {
     const izquierda = `${r.cantidad} ${r.nombre}`;
@@ -383,8 +415,10 @@ export function ticketCuenta(d: {
     });
   });
   t.linea();
-  const etiqueta = "TOTAL";
-  t.grande().negrita(true).texto(etiqueta + limpio(d.total).padStart(16 - etiqueta.length)).normal().negrita(false);
+  const etiqueta = d.preferente ? "CONSUMO" : "TOTAL";
+  t.grande().negrita(true).texto(etiqueta + limpio(d.total).padStart(16 - etiqueta.length)).normal();
+  if (d.preferente) t.centro().texto("").texto("PREFERENTE: SIN COBRO").izquierda();
+  t.negrita(false);
   t.linea().centro().texto("Gracias por su preferencia!").avanzar(4).cortar();
   return t.bytes();
 }

@@ -5,7 +5,7 @@ import { exigirRol, type Rol } from "@/lib/perfil";
 import { crearClienteAdmin } from "@/lib/supabase/admin";
 
 type Resultado = { ok: true } | { ok: false; error: string };
-const ROLES: Rol[] = ["ADMIN", "MESERO", "COCINA", "CAJERO"];
+const ROLES: Rol[] = ["ADMIN", "MESERO", "CAJERO"];
 
 export async function crearPersonal(datos: {
   nombre: string; email: string; password: string; rol: Rol; puede_cobrar: boolean;
@@ -28,6 +28,7 @@ export async function crearPersonal(datos: {
       id: data.user.id, nombre, email, rol: datos.rol,
       puede_cobrar: datos.rol === "ADMIN" || datos.rol === "CAJERO" ? true : datos.puede_cobrar,
       activo: true,
+      eliminado: false,
     },
     { onConflict: "id" }
   );
@@ -60,5 +61,25 @@ export async function cambiarPassword(id: string, password: string): Promise<Res
   if (password.length < 8) return { ok: false, error: "La contraseña debe tener al menos 8 caracteres" };
   const { error } = await crearClienteAdmin().auth.admin.updateUserById(id, { password });
   if (error) return { ok: false, error: error.message };
+  return { ok: true };
+}
+
+// Elimina al empleado: se borra su acceso (ya no puede entrar y el correo queda libre),
+// pero su nombre se conserva en las ventas que atendió o cobró.
+export async function eliminarPersonal(id: string): Promise<Resultado> {
+  const yo = await exigirRol(["ADMIN"]);
+  if (id === yo.id) return { ok: false, error: "No puedes eliminarte a ti mismo" };
+  const admin = crearClienteAdmin();
+
+  const { error: e1 } = await admin
+    .from("usuarios")
+    .update({ activo: false, eliminado: true, email: null, puede_cobrar: false })
+    .eq("id", id);
+  if (e1) return { ok: false, error: e1.message };
+
+  const { error: e2 } = await admin.auth.admin.deleteUser(id);
+  if (e2 && !/not.?found/i.test(e2.message)) return { ok: false, error: e2.message };
+
+  revalidatePath("/admin/personal");
   return { ok: true };
 }

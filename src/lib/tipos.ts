@@ -1,7 +1,7 @@
 export type Unidad = "PIEZA" | "KG";
 export type EstadoCuenta = "ABIERTA" | "CUENTA_SOLICITADA" | "PAGADA" | "CANCELADA";
 export type EstadoPedido = "ENVIADO" | "PREPARANDO" | "LISTO" | "ENTREGADO" | "CANCELADO";
-export type Metodo = "EFECTIVO" | "TARJETA" | "TRANSFERENCIA";
+export type Metodo = "EFECTIVO" | "TARJETA" | "TRANSFERENCIA" | "PREFERENTE";
 
 export type Mesa = { id: string; numero: number; capacidad: number | null; activa: boolean };
 export type Categoria = { id: string; nombre: string; orden: number };
