@@ -342,7 +342,9 @@ export default function VistaCaja({
         <div className="w-full max-w-md">
           <BotonImpresora destino="caja" />
         </div>
-        <CorteCaja />
+        {/* El corte (totales del día) solo aparece con la caja cerrada, para que el
+            cajero no pueda calcular el efectivo esperado antes de contar */}
+        {estadoCaja?.estado === "CERRADA" && <CorteCaja />}
       </div>
       <ControlCaja onCambio={setEstadoCaja} />
 
