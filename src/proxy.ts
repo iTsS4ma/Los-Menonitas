@@ -33,8 +33,10 @@ export async function proxy(request: NextRequest) {
     data: { user },
   } = await supabase.auth.getUser();
 
-  const enLogin = request.nextUrl.pathname.startsWith("/login");
-  if (!user && !enLogin) {
+  // Públicas: la página de clientes (/) y el inicio de sesión
+  const ruta = request.nextUrl.pathname;
+  const publica = ruta === "/" || ruta.startsWith("/login");
+  if (!user && !publica) {
     const url = request.nextUrl.clone();
     url.pathname = "/login";
     url.search = "";

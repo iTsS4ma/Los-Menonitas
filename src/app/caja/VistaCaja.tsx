@@ -8,6 +8,7 @@ import { diaMX, dinero, nombreCuenta, totalCuenta } from "@/lib/formato";
 import type { Cuenta, MetodoPago, DetallePedido, Mesa, Pedido } from "@/lib/tipos";
 import BotonImpresora from "@/components/BotonImpresora";
 import CorteCaja from "./CorteCaja";
+import ControlCaja, { type EstadoCaja } from "./ControlCaja";
 import { elegirImpresora, ErrorImpresion, estadoImpresoras, imprimir, ticketCuenta as bytesTicketCuenta, DATOS_LOCAL } from "@/lib/impresoraBT";
 
 type ItemAgrupado = {
@@ -111,6 +112,9 @@ export default function VistaCaja({
   const [ticketDescuento, setTicketDescuento] = useState<{ etiqueta: string; monto: number } | null>(null);
   const [cuentaIdSeleccionada, setCuentaIdSeleccionada] = useState<string | null>(cuentaInicial);
   const [metodo, setMetodo] = useState<MetodoPago>("EFECTIVO");
+  // Estado de la caja de hoy: sin abrirla (o ya cerrada) no se cobra en efectivo
+  const [estadoCaja, setEstadoCaja] = useState<EstadoCaja | null>(null);
+  const cajaAbierta = estadoCaja?.estado === "ABIERTA";
   const [ticketCuenta, setTicketCuenta] = useState<Cuenta | null>(null);
   const [horaTicket, setHoraTicket] = useState<string>("");
   const [ordenImpresion, setOrdenImpresion] = useState(0);
@@ -340,6 +344,7 @@ export default function VistaCaja({
         </div>
         <CorteCaja />
       </div>
+      <ControlCaja onCambio={setEstadoCaja} />
 
       {errorCarga && (
         <div className="rounded-xl bg-paliacate-claro px-4 py-3 text-sm text-paliacate-oscuro">
@@ -638,12 +643,20 @@ export default function VistaCaja({
                 )}
 
                 <button
-                  disabled={cargando || (!esCortesia && (faltaDinero || (metodo === "TARJETA" && !referenciaClip.trim())))}
+                  disabled={
+                    cargando ||
+                    (!esCortesia && (faltaDinero || (metodo === "TARJETA" && !referenciaClip.trim()) || (metodo === "EFECTIVO" && !cajaAbierta)))
+                  }
                   onClick={cobrar}
                   className="w-full rounded-xl bg-paliacate py-4 text-lg font-semibold text-white shadow-sm transition-colors hover:bg-paliacate-oscuro disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   {cargando ? "Procesando…" : esCortesia ? "Cerrar como cortesía" : `Cobrar ${dinero(totalFinalCobro)}`}
                 </button>
+                {!esCortesia && metodo === "EFECTIVO" && !cajaAbierta && (
+                  <p className="text-center text-sm text-paliacate">
+                    {estadoCaja?.estado === "CERRADA" ? "La caja de hoy ya se cerró: cobra con tarjeta o transferencia." : "Abre la caja (arriba) para cobrar en efectivo."}
+                  </p>
+                )}
               </div>
             </div>
           )}

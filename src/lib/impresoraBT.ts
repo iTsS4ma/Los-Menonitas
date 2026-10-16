@@ -479,8 +479,10 @@ export function ticketCorte(d: {
   hora: string;
   renglones: [string, string][];
   total: string;
+  titulo?: string;
+  etiquetaTotal?: string;
 }) {
-  const t = new Ticket().centro().grande().negrita(true).texto("CORTE DE CAJA").normal().negrita(false);
+  const t = new Ticket().centro().grande().negrita(true).texto(d.titulo ?? "CORTE DE CAJA").normal().negrita(false);
   t.texto("Los Menonitas").texto(d.fecha).texto(`Impreso ${d.hora}`).izquierda().linea();
   d.renglones.forEach(([izq, der]) => {
     if (!izq) return t.linea();
@@ -488,7 +490,8 @@ export function ticketCorte(d: {
     t.texto(i + limpio(der).padStart(ANCHO - i.length));
   });
   t.linea();
-  t.grande().negrita(true).texto("TOTAL" + limpio(d.total).padStart(11)).normal().negrita(false);
+  const etq = d.etiquetaTotal ?? "TOTAL";
+  t.grande().negrita(true).texto(etq + limpio(d.total).padStart(16 - etq.length)).normal().negrita(false);
   t.avanzar(4).cortar();
   return t.bytes();
 }

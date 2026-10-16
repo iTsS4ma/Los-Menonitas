@@ -28,7 +28,7 @@ function FormularioLogin() {
       setCargando(false);
       return;
     }
-    router.replace("/");
+    router.replace("/entrar");
     router.refresh();
   }
 
