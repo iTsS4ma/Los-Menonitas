@@ -52,7 +52,7 @@ export default function MesasPage() {
       <div>
         <h1 className="font-display text-3xl font-extrabold">Mesas</h1>
         <p className="text-sm text-cafe-medio">
-          {activas} {activas === 1 ? "mesa activa" : "mesas activas"}. Las mesas no se borran para no perder su historial; desactívalas.
+          {activas} {activas === 1 ? "mesa activa" : "mesas activas"}. 
         </p>
       </div>
 

@@ -138,7 +138,7 @@ export default function ControlCaja({ onCambio }: { onCambio: (e: EstadoCaja | n
         <div>
           <h2 className="font-display text-2xl font-extrabold">Abrir caja</h2>
           <p className="text-sm text-cafe-medio">
-            Cuenta el efectivo con el que empiezas el día (el cambio). Sin abrir la caja no se puede cobrar en efectivo.
+            Cuenta el efectivo con el que empiezas el día. Sin abrir la caja no se puede cobrar en efectivo.
           </p>
         </div>
         <div className="flex max-w-sm gap-2">

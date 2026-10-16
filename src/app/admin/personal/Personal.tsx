@@ -45,7 +45,7 @@ export default function Personal({ personas }: { personas: Persona[] }) {
       <div>
         <h1 className="font-display text-3xl font-extrabold">Personal</h1>
         <p className="text-sm text-cafe-medio">
-          Desactivar quita el acceso por un tiempo. Eliminar lo borra del sistema; sus ventas pasadas conservan su nombre.
+        Eliminar lo borra del sistema; sus ventas pasadas conservan su nombre.
         </p>
       </div>
 
@@ -86,7 +86,7 @@ export default function Personal({ personas }: { personas: Persona[] }) {
       <section className="space-y-3 rounded-2xl border border-borde bg-white p-5">
         <h2 className="font-display text-xl font-bold">Agregar persona</h2>
         <p className="text-sm text-cafe-medio">
-          El correo solo sirve para iniciar sesión; no se envía ningún mensaje. Si alguien no tiene correo, puedes inventar uno, por ejemplo juan@mirestaurante.com.
+          El correo solo sirve para iniciar sesión; no se envía ningún mensaje. Si alguien no tiene correo, puedes inventar uno, por ejemplo juan@menonitas.com.
         </p>
         <div className="grid gap-3 sm:grid-cols-2">
           <input placeholder="Nombre" value={nuevo.nombre} onChange={(e) => setNuevo({ ...nuevo, nombre: e.target.value })} className={campo} />
@@ -164,12 +164,6 @@ export default function Personal({ personas }: { personas: Persona[] }) {
                     return r;
                   }, "Contraseña cambiada");
               }}>Contraseña</button>
-              <button
-                className={`rounded-lg border px-3 py-1.5 font-semibold ${p.activo ? "border-paliacate/40 text-paliacate hover:bg-paliacate-claro" : "border-hoja text-hoja hover:bg-hoja-claro"}`}
-                disabled={pendiente}
-                onClick={() => correr(() => actualizarPersonal(p.id, { activo: !p.activo }), p.activo ? "Acceso desactivado" : "Acceso activado")}>
-                {p.activo ? "Desactivar" : "Activar"}
-              </button>
               <button
                 className="rounded-lg bg-paliacate px-3 py-1.5 font-semibold text-white hover:bg-paliacate-oscuro disabled:opacity-40"
                 disabled={pendiente}

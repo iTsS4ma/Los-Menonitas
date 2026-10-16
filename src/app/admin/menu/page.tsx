@@ -68,10 +68,6 @@ export default function MenuPage() {
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="font-display text-3xl font-extrabold">Menú</h1>
-          <p className="max-w-2xl text-sm text-cafe-medio">
-            &quot;Agotado&quot; lo bloquea por hoy en la pantalla del mesero. Quitar &quot;Visible en el menú&quot; lo esconde un tiempo; &quot;Eliminar&quot; lo quita para siempre.
-            Los cambios de precio no afectan ventas ya registradas.
-          </p>
         </div>
         <button onClick={nuevaCategoria} className="rounded-xl border-2 border-cafe px-4 py-2 font-semibold hover:bg-crema-oscuro">
           Nueva categoría

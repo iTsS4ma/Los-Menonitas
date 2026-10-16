@@ -68,8 +68,7 @@ export default function PreferentePage() {
       <div>
         <h1 className="font-display text-3xl font-extrabold">Códigos de descuento</h1>
         <p className="text-sm text-cafe-medio">
-          El cliente le dice el código a caja y se descuenta de su cuenta: gratis, un monto fijo o un porcentaje. Cada
-          código sirve una sola vez y no caduca hasta que se usa. Todo queda registrado en Reportes.
+        Los códigos de descuento sirven para una sola cuenta. Pueden ser de cuenta gratis, un monto fijo o un porcentaje. Solo se muestran los que siguen sin usar.
         </p>
       </div>
 
