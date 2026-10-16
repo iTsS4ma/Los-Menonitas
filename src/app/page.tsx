@@ -7,7 +7,10 @@ import Horario from "./Horario";
 // Admin aparece aquí solo) y se actualiza cada 5 minutos.
 export const revalidate = 300;
 
-const MAPS = "https://maps.app.goo.gl/UXX4oerBZcbUTngG7";
+// Identificador del restaurante en Google (Place ID): abre directo la ruta y el formulario de reseña
+const PLACE_ID = "ChIJk1p5lqT50YUR2eiYO0ZvVVk";
+const COMO_LLEGAR = `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent("Los Menonitas")}&destination_place_id=${PLACE_ID}`;
+const DEJAR_RESENA = `https://search.google.com/local/writereview?placeid=${PLACE_ID}`;
 const DIRECCION = "Av. Insurgentes Nte. 1681, Local 6, Tepeyac Insurgentes, Gustavo A. Madero, 07800, CDMX";
 const TELEFONO = "55 8537 1956"; // el de Google Maps
 // Número de WhatsApp a 10 dígitos (ej. "5585371956"). Mientras esté vacío, el botón no aparece.
@@ -84,7 +87,7 @@ export default async function Inicio() {
               Carnitas, tacos y antojitos <span className="text-cafe-medio">hechos al momento.</span>
             </p>
             <div className="flex flex-wrap justify-center gap-3 pt-2 md:justify-start">
-              <a href={MAPS} target="_blank" rel="noopener" className="rounded-full bg-paliacate px-6 py-3 font-semibold text-white shadow-sm hover:bg-paliacate-oscuro">
+              <a href={COMO_LLEGAR} target="_blank" rel="noopener" className="rounded-full bg-paliacate px-6 py-3 font-semibold text-white shadow-sm hover:bg-paliacate-oscuro">
                 Cómo llegar
               </a>
               {wa && (
@@ -107,7 +110,7 @@ export default async function Inicio() {
       <section id="menu" className="bg-white/60 py-14">
         <div className="mx-auto max-w-5xl px-5">
           <h2 className="mb-2 text-center font-display text-4xl font-black uppercase tracking-wide text-paliacate">Menú</h2>
-          <p className="mb-10 text-center text-cafe-medio">Precios en pesos. Lo que se acabó por hoy aparece marcado.</p>
+          <div className="mb-10" />
           {categorias.length === 0 ? (
             <p className="text-center text-cafe-medio">El menú no está disponible en este momento.</p>
           ) : (
@@ -159,11 +162,11 @@ export default async function Inicio() {
             </a>
           </div>
           <div className="flex flex-wrap gap-3 pt-1">
-            <a href={MAPS} target="_blank" rel="noopener" className="rounded-full bg-paliacate px-5 py-2.5 font-semibold text-white hover:bg-paliacate-oscuro">
-              Abrir en Google Maps
+            <a href={COMO_LLEGAR} target="_blank" rel="noopener" className="rounded-full bg-paliacate px-5 py-2.5 font-semibold text-white hover:bg-paliacate-oscuro">
+              Cómo llegar
             </a>
-            <a href={MAPS} target="_blank" rel="noopener" className="rounded-full border-2 border-cafe px-5 py-2.5 font-semibold hover:bg-cafe hover:text-crema">
-              Ver reseñas y dejar la tuya
+            <a href={DEJAR_RESENA} target="_blank" rel="noopener" className="rounded-full border-2 border-cafe px-5 py-2.5 font-semibold hover:bg-cafe hover:text-crema">
+              ★ Déjanos tu reseña
             </a>
           </div>
         </div>
