@@ -16,7 +16,7 @@ export default function MenuPage() {
   const cargar = useCallback(async () => {
     const [c, p, o] = await Promise.all([
       supabase.from("categorias").select("*").order("orden"),
-      supabase.from("productos").select("*").order("orden"),
+      supabase.from("productos").select("*").eq("eliminado", false).order("orden"),
       supabase.from("opciones_producto").select("*").order("nombre"),
     ]);
     const e = c.error || p.error || o.error;
@@ -69,7 +69,7 @@ export default function MenuPage() {
         <div>
           <h1 className="font-display text-3xl font-extrabold">Menú</h1>
           <p className="max-w-2xl text-sm text-cafe-medio">
-            &quot;Agotado&quot; lo bloquea por hoy en la pantalla del mesero. Quitar &quot;Visible en el menú&quot; lo retira sin borrar su historial.
+            &quot;Agotado&quot; lo bloquea por hoy en la pantalla del mesero. Quitar &quot;Visible en el menú&quot; lo esconde un tiempo; &quot;Eliminar&quot; lo quita para siempre.
             Los cambios de precio no afectan ventas ya registradas.
           </p>
         </div>
@@ -131,6 +131,15 @@ export default function MenuPage() {
                       </button>
                       <button onClick={() => setEditando(p)} className="rounded-lg border border-borde px-3 py-1.5 text-sm font-semibold hover:border-cafe-medio">
                         Editar
+                      </button>
+                      <button
+                        onClick={() => {
+                          if (!window.confirm(`¿Eliminar "${p.nombre}" del menú? No se puede deshacer. Si ya se vendió, sus ventas pasadas lo conservan.`)) return;
+                          ejecutar(supabase.rpc("eliminar_producto", { p_id: p.id }));
+                        }}
+                        className="rounded-lg bg-paliacate px-3 py-1.5 text-sm font-semibold text-white hover:bg-paliacate-oscuro"
+                      >
+                        Eliminar
                       </button>
                     </span>
                   </div>

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import Conexion from "@/components/Conexion";
 import { useTiempoReal } from "@/hooks/useTiempoReal";
 import { crearClienteNavegador } from "@/lib/supabase/client";
@@ -14,7 +14,36 @@ type CuentaCerrada = Cuenta & {
   cerrada_en?: string | null;
   total_final?: number | null;
   metodo_pago?: string | null;
+  consumo?: number | null;
+  descuento?: number | null;
+  pago?: { propina: number; referencia: string | null } | null;
 };
+
+type Periodo = "hoy" | "semana" | "mes" | "anio" | "todo" | "personalizado";
+
+const PERIODOS: [Periodo, string][] = [
+  ["hoy", "Hoy"],
+  ["semana", "Esta semana"],
+  ["mes", "Este mes"],
+  ["anio", "Este año"],
+  ["todo", "Siempre"],
+  ["personalizado", "Elegir fechas…"],
+];
+
+// Rango de días (YYYY-MM-DD) de cada periodo; la semana empieza en lunes
+function rangoDe(periodo: Periodo, hoy: string): [string, string] {
+  const [a, m, d] = hoy.split("-").map(Number);
+  const fecha = new Date(Date.UTC(a, m - 1, d));
+  const iso = (x: Date) => x.toISOString().slice(0, 10);
+  if (periodo === "hoy") return [hoy, hoy];
+  if (periodo === "semana") {
+    const desdeLunes = (fecha.getUTCDay() + 6) % 7;
+    return [iso(new Date(fecha.getTime() - desdeLunes * 86400000)), hoy];
+  }
+  if (periodo === "mes") return [`${hoy.slice(0, 7)}-01`, hoy];
+  if (periodo === "anio") return [`${hoy.slice(0, 4)}-01-01`, hoy];
+  return ["", ""];
+}
 
 type ProductoVendido = {
   nombre: string;
@@ -28,6 +57,7 @@ const ETIQUETA_METODO: Record<string, string> = {
   TARJETA: "Tarjeta",
   TRANSFERENCIA: "Transferencia",
   PREFERENTE: "Preferente",
+  CORTESIA: "Cortesía",
 };
 
 // Día (YYYY-MM-DD) en hora de CDMX, para que las ventas de la noche no caigan en el día siguiente
@@ -36,8 +66,10 @@ const diaDe = (fecha: string) => new Date(fecha).toLocaleDateString("en-CA", { t
 export default function PaginaAdmin() {
   const supabase = useMemo(() => crearClienteNavegador(), []);
 
-  const [fechaDesde, setFechaDesde] = useState<string>("");
-  const [fechaHasta, setFechaHasta] = useState<string>("");
+  const [periodo, setPeriodo] = useState<Periodo>("hoy");
+  const [fechaDesde, setFechaDesde] = useState<string>(() => diaMX());
+  const [fechaHasta, setFechaHasta] = useState<string>(() => diaMX());
+  const [abierta, setAbierta] = useState<string | null>(null);
 
   const [cuentasCerradas, setCuentasCerradas] = useState<CuentaCerrada[]>([]);
   const [nombres, setNombres] = useState<Map<string, string>>(new Map());
@@ -96,11 +128,22 @@ export default function PaginaAdmin() {
         .in("cuenta_id", cuentasRaw.map((c) => c.id));
       const pedidos = (dataPedidos || []) as Pedido[];
 
+      // Propina y referencia de Clip de cada cobro
+      const { data: dataPagos } = await supabase
+        .from("pagos")
+        .select("cuenta_id, propina, referencia")
+        .in("cuenta_id", cuentasRaw.map((c) => c.id));
+      const mapaPagos = new Map<string, { propina: number; referencia: string | null }>();
+      ((dataPagos || []) as { cuenta_id: string; propina: number | null; referencia: string | null }[]).forEach((p) =>
+        mapaPagos.set(p.cuenta_id, { propina: Number(p.propina ?? 0), referencia: p.referencia })
+      );
+
       const completas: CuentaCerrada[] = cuentasRaw
         .map((c) => ({
           ...c,
           mesas: c.mesa_id ? mapaMesas.get(c.mesa_id) ?? null : null,
           pedidos: pedidos.filter((p) => p.cuenta_id === c.id),
+          pago: mapaPagos.get(c.id) ?? null,
         }))
         .sort((a, b) => String(b.cerrada_en || b.abierta_en).localeCompare(String(a.cerrada_en || a.abierta_en)));
 
@@ -123,13 +166,15 @@ export default function PaginaAdmin() {
 
   // Totales por método
   const resumen = useMemo(() => {
-    const r = { total: 0, cobradas: 0, EFECTIVO: 0, TARJETA: 0, TRANSFERENCIA: 0, PREFERENTE: 0, preferentes: 0 };
+    const r = { total: 0, cobradas: 0, EFECTIVO: 0, TARJETA: 0, TRANSFERENCIA: 0, descuentos: 0, cortesias: 0, propinas: 0 };
     cuentasCerradas.forEach((c) => {
       const monto = totalDe(c);
-      // Preferente: se consumió pero no se cobró; no suma a lo vendido
-      if (c.metodo_pago === "PREFERENTE") {
-        r.PREFERENTE += monto;
-        r.preferentes += 1;
+      r.descuentos += Number(c.descuento ?? 0);
+      r.propinas += Number(c.pago?.propina ?? 0);
+      // Cortesía (y la antigua Preferente): se consumió pero no se cobró; no suma a lo vendido
+      if (c.metodo_pago === "CORTESIA" || c.metodo_pago === "PREFERENTE") {
+        r.cortesias += 1;
+        if (c.metodo_pago === "PREFERENTE") r.descuentos += monto;
         return;
       }
       r.total += monto;
@@ -186,35 +231,48 @@ export default function PaginaAdmin() {
         <div>
           <h1 className="font-display text-3xl font-extrabold">Ventas</h1>
           <p className="text-sm text-cafe-medio">
-            {fechaDesde || fechaHasta ? "Periodo filtrado" : "Todo el histórico"}
+            {periodo === "todo" ? "Todo el histórico" : fechaDesde === fechaHasta ? fechaDesde : `Del ${fechaDesde || "inicio"} al ${fechaHasta || "hoy"}`}
           </p>
         </div>
 
         <div className="flex flex-wrap items-end gap-2">
-          <button
-            onClick={() => rango(hoy, hoy)}
-            className={`rounded-lg border px-3 py-2 text-sm font-semibold ${
-              fechaDesde === hoy && fechaHasta === hoy ? "border-cafe bg-cafe text-crema" : "border-borde bg-white hover:border-cafe-medio"
-            }`}
+          <a
+            href="/api/respaldo"
+            className="rounded-lg border border-borde bg-white px-3 py-2 text-sm font-semibold hover:border-cafe-medio"
+            title="Descarga un archivo con toda la información del sistema"
           >
-            Hoy
-          </button>
+            Descargar respaldo
+          </a>
           <label className="text-xs font-semibold text-cafe-medio">
-            Desde
-            <input type="date" value={fechaDesde} onChange={(e) => setFechaDesde(e.target.value)} className={`block ${inputFecha}`} />
+            Periodo
+            <select
+              value={periodo}
+              onChange={(e) => {
+                const p = e.target.value as Periodo;
+                setPeriodo(p);
+                if (p !== "personalizado") rango(...rangoDe(p, hoy));
+              }}
+              className={`block ${inputFecha} pr-8 font-semibold`}
+            >
+              {PERIODOS.map(([v, t]) => (
+                <option key={v} value={v}>
+                  {t}
+                </option>
+              ))}
+            </select>
           </label>
-          <label className="text-xs font-semibold text-cafe-medio">
-            Hasta
-            <input type="date" value={fechaHasta} onChange={(e) => setFechaHasta(e.target.value)} className={`block ${inputFecha}`} />
-          </label>
-          <button
-            onClick={() => rango("", "")}
-            className={`rounded-lg border px-3 py-2 text-sm font-semibold ${
-              !fechaDesde && !fechaHasta ? "border-cafe bg-cafe text-crema" : "border-borde bg-white hover:border-cafe-medio"
-            }`}
-          >
-            Todo
-          </button>
+          {periodo === "personalizado" && (
+            <>
+              <label className="text-xs font-semibold text-cafe-medio">
+                Desde
+                <input type="date" value={fechaDesde} onChange={(e) => setFechaDesde(e.target.value)} className={`block ${inputFecha}`} />
+              </label>
+              <label className="text-xs font-semibold text-cafe-medio">
+                Hasta
+                <input type="date" value={fechaHasta} onChange={(e) => setFechaHasta(e.target.value)} className={`block ${inputFecha}`} />
+              </label>
+            </>
+          )}
         </div>
       </div>
 
@@ -237,13 +295,16 @@ export default function PaginaAdmin() {
           <div key={m} className="rounded-2xl border border-borde bg-white p-5">
             <span className="text-sm text-cafe-medio">{ETIQUETA_METODO[m]}</span>
             <p className="mt-1 font-display text-2xl font-bold tabular-nums">{dinero(resumen[m])}</p>
+            {m === "TARJETA" && resumen.propinas > 0 && (
+              <span className="text-xs text-cafe-medio">+ {dinero(resumen.propinas)} de propinas</span>
+            )}
           </div>
         ))}
         <div className="rounded-2xl border border-dashed border-cafe/40 bg-crema p-5">
-          <span className="text-sm text-cafe-medio">Preferente (sin cobro)</span>
-          <p className="mt-1 font-display text-2xl font-bold tabular-nums">{dinero(resumen.PREFERENTE)}</p>
+          <span className="text-sm text-cafe-medio">Descuentos dados</span>
+          <p className="mt-1 font-display text-2xl font-bold tabular-nums">{dinero(resumen.descuentos)}</p>
           <span className="text-xs text-cafe-medio">
-            {resumen.preferentes} {resumen.preferentes === 1 ? "cuenta" : "cuentas"} · no suma a lo vendido
+            {resumen.cortesias} {resumen.cortesias === 1 ? "cortesía" : "cortesías"} · no suma a lo vendido
           </span>
         </div>
       </div>
@@ -349,9 +410,30 @@ export default function PaginaAdmin() {
                   const metodo = c.metodo_pago ?? "EFECTIVO";
                   const mesero = c.mesero_id ? nombres.get(c.mesero_id) ?? "Usuario eliminado" : "—";
 
+                  const expandida = abierta === c.id;
+                  const renglones = new Map<string, { cantidad: number; unidad: string; importe: number }>();
+                  if (expandida)
+                    c.pedidos
+                      .filter((p) => p.estado !== "CANCELADO")
+                      .forEach((p) =>
+                        p.detalle_pedido
+                          .filter((d) => d.estado === "ACTIVO")
+                          .forEach((d) => {
+                            const n = `${d.nombre_producto}${d.nombre_opcion ? ` (${d.nombre_opcion})` : ""}${d.con_quesillo ? " + quesillo" : ""}`;
+                            const r = renglones.get(n) ?? { cantidad: 0, unidad: d.unidad, importe: 0 };
+                            r.cantidad += Number(d.cantidad);
+                            r.importe += Number(d.importe);
+                            renglones.set(n, r);
+                          })
+                      );
+
                   return (
-                    <tr key={c.id} className="hover:bg-crema/50">
-                      <td className="whitespace-nowrap px-5 py-3 tabular-nums text-cafe-medio">{fechaFormateada}</td>
+                    <Fragment key={c.id}>
+                    <tr onClick={() => setAbierta(expandida ? null : c.id)} className={`cursor-pointer hover:bg-crema/50 ${expandida ? "bg-crema/60" : ""}`}>
+                      <td className="whitespace-nowrap px-5 py-3 tabular-nums text-cafe-medio">
+                        <span className="mr-1.5 inline-block w-3 text-cafe">{expandida ? "▾" : "▸"}</span>
+                        {fechaFormateada}
+                      </td>
                       <td className="px-5 py-3 font-semibold">{nombreCuenta(c)}</td>
                       <td className="px-5 py-3">{mesero}</td>
                       <td className="px-5 py-3">
@@ -364,6 +446,33 @@ export default function PaginaAdmin() {
                         {dinero(totalDe(c))}
                       </td>
                     </tr>
+                    {expandida && (
+                      <tr className="bg-crema/40">
+                        <td colSpan={6} className="px-5 pb-4 pt-1">
+                          <ul className="divide-y divide-borde/60 rounded-xl border border-borde bg-white">
+                            {[...renglones.entries()].map(([n, r]) => (
+                              <li key={n} className="flex justify-between gap-3 px-4 py-2">
+                                <span>
+                                  <strong className="tabular-nums">{r.unidad === "KG" ? `${r.cantidad.toFixed(3)} kg` : `${r.cantidad}×`}</strong> {n}
+                                </span>
+                                <span className="tabular-nums">{dinero(r.importe)}</span>
+                              </li>
+                            ))}
+                          </ul>
+                          <div className="mt-2 flex flex-wrap gap-x-6 gap-y-1 text-xs text-cafe-medio">
+                            {Number(c.descuento ?? 0) > 0 && (
+                              <span>
+                                Consumo {dinero(Number(c.consumo ?? totalCuenta(c.pedidos)))} · Descuento −{dinero(Number(c.descuento))}
+                                {c.pago?.referencia && metodo !== "TARJETA" ? ` (código ${c.pago.referencia})` : ""}
+                              </span>
+                            )}
+                            {metodo === "TARJETA" && c.pago?.referencia && <span>Referencia Clip: {c.pago.referencia}</span>}
+                            {Number(c.pago?.propina ?? 0) > 0 && <span>Propina: {dinero(Number(c.pago?.propina))}</span>}
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                    </Fragment>
                   );
                 })}
               </tbody>

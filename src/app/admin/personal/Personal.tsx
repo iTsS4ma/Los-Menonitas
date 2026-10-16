@@ -9,13 +9,24 @@ export type Persona = { id: string; nombre: string; email: string | null; rol: R
 
 const ROLES: { valor: Rol; texto: string }[] = [
   { valor: "MESERO", texto: "Mesero" },
-  { valor: "CAJERO", texto: "Cajero" }, { valor: "ADMIN", texto: "Administrador" },
+  { valor: "CAJERO", texto: "Cajero" },
 ];
+
+// Contraseña fácil de dictar: sin letras ni números que se confunden
+function generarPassword() {
+  const letras = "abcdefghjkmnpqrstuvwxyz";
+  const numeros = "23456789";
+  const al = (t: string) => t[Math.floor(Math.random() * t.length)];
+  return Array.from({ length: 6 }, () => al(letras)).join("") + al(numeros) + al(numeros);
+}
 
 export default function Personal({ personas }: { personas: Persona[] }) {
   const router = useRouter();
   const [pendiente, iniciar] = useTransition();
   const [mensaje, setMensaje] = useState("");
+  // Se muestra una sola vez, para copiarla y pasársela al empleado (después ya no se puede ver)
+  const [credencial, setCredencial] = useState<{ nombre: string; email: string; password: string } | null>(null);
+  const [copiado, setCopiado] = useState(false);
   const [nuevo, setNuevo] = useState({ nombre: "", email: "", password: "", rol: "MESERO" as Rol, puede_cobrar: false });
 
   function correr(accion: () => Promise<{ ok: boolean; error?: string }>, exito: string) {
@@ -44,6 +55,34 @@ export default function Personal({ personas }: { personas: Persona[] }) {
         </p>
       )}
 
+      {credencial && (
+        <div className="space-y-2 rounded-2xl border-2 border-queso bg-queso-claro p-4">
+          <p className="text-sm">
+            <strong>Datos de acceso de {credencial.nombre}.</strong> Cópialos y pásaselos: por seguridad, la contraseña no se
+            vuelve a mostrar.
+          </p>
+          <p className="font-mono text-sm">
+            Correo: {credencial.email}
+            <br />
+            Contraseña: <strong className="text-base">{credencial.password}</strong>
+          </p>
+          <div className="flex gap-2">
+            <button
+              className="rounded-lg bg-cafe px-4 py-2 text-sm font-semibold text-crema"
+              onClick={async () => {
+                await navigator.clipboard.writeText(`Correo: ${credencial.email}\nContraseña: ${credencial.password}`);
+                setCopiado(true);
+              }}
+            >
+              {copiado ? "¡Copiado!" : "Copiar"}
+            </button>
+            <button className="rounded-lg border border-borde px-4 py-2 text-sm font-semibold" onClick={() => setCredencial(null)}>
+              Listo
+            </button>
+          </div>
+        </div>
+      )}
+
       <section className="space-y-3 rounded-2xl border border-borde bg-white p-5">
         <h2 className="font-display text-xl font-bold">Agregar persona</h2>
         <p className="text-sm text-cafe-medio">
@@ -52,7 +91,12 @@ export default function Personal({ personas }: { personas: Persona[] }) {
         <div className="grid gap-3 sm:grid-cols-2">
           <input placeholder="Nombre" value={nuevo.nombre} onChange={(e) => setNuevo({ ...nuevo, nombre: e.target.value })} className={campo} />
           <input placeholder="Correo" type="email" value={nuevo.email} onChange={(e) => setNuevo({ ...nuevo, email: e.target.value })} className={campo} />
-          <input placeholder="Contraseña (mínimo 8)" value={nuevo.password} onChange={(e) => setNuevo({ ...nuevo, password: e.target.value })} className={campo} />
+          <div className="flex gap-2">
+            <input placeholder="Contraseña (mínimo 8)" value={nuevo.password} onChange={(e) => setNuevo({ ...nuevo, password: e.target.value })} className={`${campo} min-w-0 flex-1`} />
+            <button type="button" onClick={() => setNuevo({ ...nuevo, password: generarPassword() })} className="rounded-xl border border-borde px-3 text-sm font-semibold hover:border-cafe-medio">
+              Generar
+            </button>
+          </div>
           <select value={nuevo.rol} onChange={(e) => setNuevo({ ...nuevo, rol: e.target.value as Rol })} className={campo}>
             {ROLES.map((r) => <option key={r.valor} value={r.valor}>{r.texto}</option>)}
           </select>
@@ -67,7 +111,11 @@ export default function Personal({ personas }: { personas: Persona[] }) {
           disabled={pendiente}
           onClick={() => correr(async () => {
             const r = await crearPersonal(nuevo);
-            if (r.ok) setNuevo({ nombre: "", email: "", password: "", rol: "MESERO", puede_cobrar: false });
+            if (r.ok) {
+              setCopiado(false);
+              setCredencial({ nombre: nuevo.nombre, email: nuevo.email.trim().toLowerCase(), password: nuevo.password });
+              setNuevo({ nombre: "", email: "", password: "", rol: "MESERO", puede_cobrar: false });
+            }
             return r;
           }, "Persona agregada. Ya puede iniciar sesión.")}
           className="rounded-xl bg-paliacate px-6 py-2.5 font-semibold text-white hover:bg-paliacate-oscuro disabled:opacity-40"
@@ -105,8 +153,16 @@ export default function Personal({ personas }: { personas: Persona[] }) {
                 </label>
               )}
               <button className="rounded-lg border border-borde px-3 py-1.5 font-semibold hover:border-cafe-medio" disabled={pendiente} onClick={() => {
-                const nueva = window.prompt(`Nueva contraseña para ${p.nombre} (mínimo 8)`);
-                if (nueva) correr(() => cambiarPassword(p.id, nueva), "Contraseña cambiada");
+                const nueva = window.prompt(`Nueva contraseña para ${p.nombre} (mínimo 8). Puedes dejar la sugerida:`, generarPassword());
+                if (nueva)
+                  correr(async () => {
+                    const r = await cambiarPassword(p.id, nueva);
+                    if (r.ok) {
+                      setCopiado(false);
+                      setCredencial({ nombre: p.nombre, email: p.email ?? "", password: nueva });
+                    }
+                    return r;
+                  }, "Contraseña cambiada");
               }}>Contraseña</button>
               <button
                 className={`rounded-lg border px-3 py-1.5 font-semibold ${p.activo ? "border-paliacate/40 text-paliacate hover:bg-paliacate-claro" : "border-hoja text-hoja hover:bg-hoja-claro"}`}

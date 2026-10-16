@@ -1,14 +1,20 @@
 // Impresión directa a impresoras térmicas Bluetooth (BLE) desde Chrome
-// (Android o computadora con Bluetooth). Cada "destino" (cocina, caja) puede
-// tener una o varias impresoras; la comanda se manda a todas, una por una.
-// Se conecta solo para imprimir y se desconecta enseguida, para que otros
-// equipos puedan usar la misma impresora.
+// (Android o computadora con Bluetooth). Hay 3 lugares fijos: Cocina,
+// Garnachas y Caja, cada uno con UNA impresora. Elegir otra reemplaza a la
+// anterior, así no se repiten. Los lugares se vacían al empezar un día nuevo.
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 import { LOGO_ALTO, LOGO_ANCHO, LOGO_BITS } from "./logoTicket";
 
-export type Destino = "cocina" | "caja";
+export type Destino = "cocina" | "garnachas" | "caja";
+
+// Cómo se reconoce cada impresora en la ventana de Chrome (final de su dirección Bluetooth)
+export const LUGARES: Record<Destino, { nombre: string; terminacion: string }> = {
+  cocina: { nombre: "Cocina", terminacion: "72" },
+  garnachas: { nombre: "Garnachas", terminacion: "BC" },
+  caja: { nombre: "Caja", terminacion: "1A" },
+};
 
 export type ImpresoraGuardada = { id: string; nombre: string; lista: boolean };
 
@@ -29,32 +35,48 @@ const SERVICIOS = [
   "49535343-fe7d-4ae5-8fa9-9fafd205e455",
 ];
 
-const dispositivos: Record<Destino, Map<string, any>> = { cocina: new Map(), caja: new Map() };
-const imprimiendo: Record<Destino, boolean> = { cocina: false, caja: false };
+const dispositivos: Record<Destino, Map<string, any>> = { cocina: new Map(), garnachas: new Map(), caja: new Map() };
+const imprimiendo: Record<Destino, boolean> = { cocina: false, garnachas: false, caja: false };
 let cola: Promise<unknown> = Promise.resolve();
-const oyentes: Record<Destino, Set<(e: EstadoImpresoras) => void>> = { cocina: new Set(), caja: new Set() };
+const oyentes: Record<Destino, Set<(e: EstadoImpresoras) => void>> = {
+  cocina: new Set(),
+  garnachas: new Set(),
+  caja: new Set(),
+};
 
 const bt = () => (typeof navigator !== "undefined" ? (navigator as any).bluetooth : undefined);
-const clave = (d: Destino) => `impresoras_bt_${d}`;
+const clave = (d: Destino) => `impresora_lugar_${d}`;
+const hoy = () => new Date().toLocaleDateString("en-CA", { timeZone: "America/Mexico_City" });
 
+// Cada lugar guarda una sola impresora, con la fecha en que se conectó.
+// Si es de otro día, el lugar se considera vacío y hay que volver a conectarla.
 function guardadas(d: Destino): { id: string; nombre: string }[] {
   try {
     const crudo = localStorage.getItem(clave(d));
-    if (crudo) return JSON.parse(crudo);
-    // Compatibilidad con la versión anterior (una sola impresora de cocina)
-    if (d === "cocina") {
-      const id = localStorage.getItem("impresora_bt_id");
-      if (id) return [{ id, nombre: localStorage.getItem("impresora_bt_nombre") ?? "Impresora" }];
+    if (!crudo) return [];
+    const g = JSON.parse(crudo) as { id: string; nombre: string; dia: string };
+    if (g.dia !== hoy()) {
+      localStorage.removeItem(clave(d));
+      return [];
     }
-  } catch {}
-  return [];
+    return [{ id: g.id, nombre: g.nombre }];
+  } catch {
+    return [];
+  }
 }
 
 function guardar(d: Destino, lista: { id: string; nombre: string }[]) {
   try {
-    localStorage.setItem(clave(d), JSON.stringify(lista));
+    if (lista.length === 0) localStorage.removeItem(clave(d));
+    else localStorage.setItem(clave(d), JSON.stringify({ ...lista[lista.length - 1], dia: hoy() }));
   } catch {}
 }
+
+// Limpia lo que guardaban las versiones anteriores (listas con impresoras repetidas)
+try {
+  if (typeof localStorage !== "undefined")
+    ["impresoras_bt_cocina", "impresoras_bt_caja", "impresora_bt_id", "impresora_bt_nombre"].forEach((k) => localStorage.removeItem(k));
+} catch {}
 
 export function estadoImpresoras(d: Destino): EstadoImpresoras {
   return {
@@ -92,15 +114,18 @@ export async function recuperarImpresoras(d: Destino) {
 }
 
 /** Abre la ventana de Chrome para elegir una impresora. Debe llamarse desde un toque. */
-export async function elegirImpresora(d: Destino, reemplazarTodas = false) {
-  if (!bt()) throw new Error("Este navegador no puede usar Bluetooth. Usa Chrome.");
+export async function elegirImpresora(d: Destino) {
+  if (!bt()) throw new Error("Este navegador no puede usar Bluetooth. Usa Chrome en Android o en computadora.");
   const dev = await bt().requestDevice({ acceptAllDevices: true, optionalServices: SERVICIOS });
-  let lista = reemplazarTodas ? [] : guardadas(d).filter((g) => g.id !== dev.id);
-  if (reemplazarTodas) {
-    dispositivos[d].forEach((x) => soltar(x));
-    dispositivos[d].clear();
+  // La misma impresora no puede estar en dos lugares
+  for (const otro of Object.keys(LUGARES) as Destino[]) {
+    if (otro !== d && guardadas(otro).some((g) => g.id === dev.id))
+      throw new Error(`Esa impresora ya está conectada como ${LUGARES[otro].nombre}. Elige la que termina en ${LUGARES[d].terminacion}.`);
   }
-  lista = [...lista, { id: dev.id, nombre: dev.name ?? "Impresora" }];
+  // Un lugar = una impresora: la nueva reemplaza a la anterior
+  dispositivos[d].forEach((x) => soltar(x));
+  dispositivos[d].clear();
+  const lista = [{ id: dev.id, nombre: dev.name ?? "Impresora" }];
   guardar(d, lista);
   dispositivos[d].set(dev.id, dev);
   avisar(d);
@@ -137,6 +162,7 @@ async function caracteristicaEscritura(servidor: any) {
 // Cuánto tiempo sin imprimir antes de soltar la impresora
 const ESPERA_SOLTAR: Record<Destino, number> = {
   cocina: 4000, // corto: otros meseros usan las mismas impresoras
+  garnachas: 4000,
   caja: 20000, // la impresora de caja es solo de la computadora de caja
 };
 const PAUSA_TRAS_SOLTAR = 1500;
@@ -286,6 +312,21 @@ export async function reconectarImpresora(d: Destino) {
   return elegirImpresora(d);
 }
 
+/** Papelito de prueba para confirmar que cada lugar tiene la impresora correcta. */
+export function ticketPrueba(d: Destino) {
+  return new Ticket()
+    .centro()
+    .grande()
+    .negrita(true)
+    .texto(`PRUEBA ${LUGARES[d].nombre.toUpperCase()}`)
+    .normal()
+    .negrita(false)
+    .texto(`Debe ser la impresora que termina en ${LUGARES[d].terminacion}`)
+    .avanzar(3)
+    .cortar()
+    .bytes();
+}
+
 // ---------------------------------------------------------------------------
 // Formato ESC/POS para rollo de 58 mm (32 caracteres por línea)
 // ---------------------------------------------------------------------------
@@ -399,7 +440,9 @@ export function ticketCuenta(d: {
   fecha: string;
   renglones: { cantidad: string; nombre: string; importe: string }[];
   total: string;
-  preferente?: boolean;
+  subtotal?: string;
+  descuento?: { etiqueta: string; monto: string };
+  cortesia?: boolean;
 }) {
   const t = new Ticket().centro().imagen(bitsLogo(), LOGO_ANCHO, LOGO_ALTO);
   t.grande().negrita(true).texto("LOS MENONITAS").normal().negrita(false);
@@ -415,10 +458,37 @@ export function ticketCuenta(d: {
     });
   });
   t.linea();
-  const etiqueta = d.preferente ? "CONSUMO" : "TOTAL";
-  t.grande().negrita(true).texto(etiqueta + limpio(d.total).padStart(16 - etiqueta.length)).normal();
-  if (d.preferente) t.centro().texto("").texto("PREFERENTE: SIN COBRO").izquierda();
+  const renglon = (izq: string, der: string) => {
+    const i = limpio(izq).slice(0, ANCHO - der.length - 1);
+    t.texto(i + limpio(der).padStart(ANCHO - i.length));
+  };
+  if (d.descuento && d.subtotal) {
+    renglon("Subtotal", d.subtotal);
+    renglon(d.descuento.etiqueta, d.descuento.monto);
+  }
+  t.grande().negrita(true).texto("TOTAL" + limpio(d.total).padStart(11)).normal();
+  if (d.cortesia) t.centro().texto("").texto("CORTESIA: SIN COBRO").izquierda();
   t.negrita(false);
   t.linea().centro().texto("Gracias por su preferencia!").avanzar(4).cortar();
+  return t.bytes();
+}
+
+/** Corte de caja del día. */
+export function ticketCorte(d: {
+  fecha: string;
+  hora: string;
+  renglones: [string, string][];
+  total: string;
+}) {
+  const t = new Ticket().centro().grande().negrita(true).texto("CORTE DE CAJA").normal().negrita(false);
+  t.texto("Los Menonitas").texto(d.fecha).texto(`Impreso ${d.hora}`).izquierda().linea();
+  d.renglones.forEach(([izq, der]) => {
+    if (!izq) return t.linea();
+    const i = limpio(izq).slice(0, ANCHO - der.length - 1);
+    t.texto(i + limpio(der).padStart(ANCHO - i.length));
+  });
+  t.linea();
+  t.grande().negrita(true).texto("TOTAL" + limpio(d.total).padStart(11)).normal().negrita(false);
+  t.avanzar(4).cortar();
   return t.bytes();
 }

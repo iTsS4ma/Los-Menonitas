@@ -7,6 +7,7 @@ import { crearClienteNavegador } from "@/lib/supabase/client";
 import { diaMX, dinero, nombreCuenta, totalCuenta } from "@/lib/formato";
 import type { Cuenta, MetodoPago, DetallePedido, Mesa, Pedido } from "@/lib/tipos";
 import BotonImpresora from "@/components/BotonImpresora";
+import CorteCaja from "./CorteCaja";
 import { elegirImpresora, ErrorImpresion, estadoImpresoras, imprimir, ticketCuenta as bytesTicketCuenta, DATOS_LOCAL } from "@/lib/impresoraBT";
 
 type ItemAgrupado = {
@@ -16,6 +17,19 @@ type ItemAgrupado = {
   precio_unitario: number;
   subtotal: number;
 };
+
+type CodigoDescuento = { codigo: string; tipo: "TOTAL" | "MONTO" | "PORCENTAJE"; valor: number | null };
+
+// Mismo cálculo que hace la base de datos al cobrar
+function calcularDescuento(c: CodigoDescuento | null, consumo: number) {
+  if (!c) return 0;
+  if (c.tipo === "TOTAL") return consumo;
+  if (c.tipo === "MONTO") return Math.min(Number(c.valor), consumo);
+  return Math.min(Math.round(consumo * Number(c.valor)) / 100, consumo);
+}
+
+const etiquetaCodigo = (c: CodigoDescuento) =>
+  c.tipo === "TOTAL" ? "Cortesía" : c.tipo === "MONTO" ? `Descuento ${c.codigo}` : `Descuento ${Number(c.valor)}% (${c.codigo})`;
 
 function calcularRedondeo50Centavos(monto: number) {
   const redondeado = Math.round(monto * 2) / 2;
@@ -87,8 +101,14 @@ export default function VistaCaja({
   const [cuentas, setCuentas] = useState<Cuenta[]>([]);
   // Cuentas que quedaron en $0 (rondas canceladas): solo se pueden cancelar
   const [cuentasCero, setCuentasCero] = useState<Cuenta[]>([]);
-  const [codigoPreferente, setCodigoPreferente] = useState("");
-  const [ticketPreferente, setTicketPreferente] = useState(false);
+  // Código de descuento (opcional) y datos de tarjeta
+  const [codigoTexto, setCodigoTexto] = useState("");
+  const [codigo, setCodigo] = useState<CodigoDescuento | null>(null);
+  const [revisandoCodigo, setRevisandoCodigo] = useState(false);
+  const [referenciaClip, setReferenciaClip] = useState("");
+  const [propina, setPropina] = useState("");
+  // Descuento que se imprime en el ticket (si había un código aplicado al imprimir)
+  const [ticketDescuento, setTicketDescuento] = useState<{ etiqueta: string; monto: number } | null>(null);
   const [cuentaIdSeleccionada, setCuentaIdSeleccionada] = useState<string | null>(cuentaInicial);
   const [metodo, setMetodo] = useState<MetodoPago>("EFECTIVO");
   const [ticketCuenta, setTicketCuenta] = useState<Cuenta | null>(null);
@@ -110,12 +130,17 @@ export default function VistaCaja({
     return totalCuenta(seleccionada.pedidos);
   }, [seleccionada]);
 
-  // Preferente y tarjeta: sin redondeo
+  const descuento = calcularDescuento(codigo, totalCalculado);
+  const totalConDescuento = Number((totalCalculado - descuento).toFixed(2));
+  const esCortesia = !!codigo && totalConDescuento <= 0;
+
+  // Solo efectivo se redondea (a 50 centavos)
   const { total: totalFinalCobro, redondeo } = useMemo(() => {
+    if (esCortesia) return { total: 0, redondeo: 0 };
     return metodo === "EFECTIVO"
-      ? calcularRedondeo50Centavos(totalCalculado)
-      : { total: totalCalculado, redondeo: 0 };
-  }, [totalCalculado, metodo]);
+      ? calcularRedondeo50Centavos(totalConDescuento)
+      : { total: totalConDescuento, redondeo: 0 };
+  }, [totalConDescuento, metodo, esCortesia]);
 
   const montoRecibido = Number(pagoCon) || 0;
   const cambio = Math.max(0, Number((montoRecibido - totalFinalCobro).toFixed(2)));
@@ -123,8 +148,24 @@ export default function VistaCaja({
 
   useEffect(() => {
     setPagoCon("");
-    setCodigoPreferente("");
   }, [cuentaIdSeleccionada, metodo]);
+
+  // Al cambiar de cuenta se limpian código y datos de tarjeta
+  useEffect(() => {
+    setCodigo(null);
+    setCodigoTexto("");
+    setReferenciaClip("");
+    setPropina("");
+  }, [cuentaIdSeleccionada]);
+
+  async function aplicarCodigo() {
+    if (!codigoTexto.trim()) return;
+    setRevisandoCodigo(true);
+    const { data, error } = await supabase.rpc("revisar_codigo_descuento", { p_codigo: codigoTexto });
+    setRevisandoCodigo(false);
+    if (error) return alert(error.message.includes("inválido") ? "Código de descuento inválido o ya usado." : `Error: ${error.message}`);
+    setCodigo(data as CodigoDescuento);
+  }
 
   const cargar = useCallback(async () => {
     const resCuentas = await supabase
@@ -175,13 +216,15 @@ export default function VistaCaja({
 
   const conectado = useTiempoReal("caja", ["cuentas", "pedidos", "detalle_pedido"], cargar);
 
-  const [errorImpresion, setErrorImpresion] = useState<{ cuenta: Cuenta; mensaje: string; sinPermiso: boolean; preferente?: boolean } | null>(null);
+  const [errorImpresion, setErrorImpresion] = useState<{ cuenta: Cuenta; mensaje: string; sinPermiso: boolean } | null>(null);
 
   // Ticket de cuenta: por la impresora Bluetooth de caja si hay una configurada;
   // si no, con la ventana de impresión del navegador.
-  async function iniciarImpresion(cuenta: Cuenta, reconectar = false, preferente = false) {
-    if (cuenta.estado !== "CUENTA_SOLICITADA" && !preferente) return;
-    setTicketPreferente(preferente);
+  async function iniciarImpresion(cuenta: Cuenta, reconectar = false) {
+    if (cuenta.estado !== "CUENTA_SOLICITADA") return;
+    const consumo = totalCuenta(cuenta.pedidos);
+    const desc = cuenta.id === seleccionada?.id && codigo ? { etiqueta: etiquetaCodigo(codigo), monto: calcularDescuento(codigo, consumo) } : null;
+    setTicketDescuento(desc);
     const hora = horaActualMX();
     setHoraTicket(hora);
     setTicketCuenta(cuenta);
@@ -199,18 +242,19 @@ export default function VistaCaja({
         nombre: it.nombre,
         importe: dinero(it.subtotal),
       })),
-      total: dinero(totalCuenta(cuenta.pedidos)),
-      preferente,
+      total: dinero(consumo - (desc?.monto ?? 0)),
+      subtotal: desc ? dinero(consumo) : undefined,
+      descuento: desc ? { etiqueta: desc.etiqueta, monto: `-${dinero(desc.monto)}` } : undefined,
+      cortesia: !!desc && consumo - desc.monto <= 0,
     });
     try {
-      if (reconectar) await elegirImpresora("caja", true);
+      if (reconectar) await elegirImpresora("caja");
       await imprimir("caja", bytes);
       setErrorImpresion(null);
     } catch (e) {
       setErrorImpresion({
         cuenta,
         mensaje: e instanceof Error ? e.message : "Error al imprimir.",
-        preferente,
         sinPermiso: e instanceof ErrorImpresion && (e.fallidas.length === 0 || e.fallidas.some((f) => f.sinPermiso)),
       });
     }
@@ -238,11 +282,18 @@ export default function VistaCaja({
 
     // Registra el pago y cierra la cuenta en un solo paso (función cobrar_cuenta de la base):
     // guarda método, total, redondeo y fecha de cierre, que es lo que lee Reportes.
-    const { error: updateError } = await supabase.rpc("cobrar_cuenta", {
+    if (!esCortesia && metodo === "TARJETA" && !referenciaClip.trim()) {
+      alert("Escribe la referencia del comprobante de Clip.");
+      return;
+    }
+    const { error: updateError } = await supabase.rpc("cobrar_cuenta_v2", {
       p_cuenta_id: seleccionada.id,
       p_metodo: metodo,
-      p_total: totalFinalCobro,
       p_redondeo: redondeo,
+      p_codigo: codigo?.codigo ?? null,
+      p_referencia: metodo === "TARJETA" ? referenciaClip.trim() : null,
+      p_propina: metodo === "TARJETA" ? Number(propina) || 0 : 0,
+      p_recibido: metodo === "EFECTIVO" && montoRecibido > 0 ? montoRecibido : null,
     });
 
     setCargando(false);
@@ -255,26 +306,6 @@ export default function VistaCaja({
     setCuentaIdSeleccionada(null);
     setPagoCon("");
     await cargar();
-  }
-
-  // ---------- Preferente: cuenta sin cobro con contraseña de un solo uso ----------
-  async function cerrarPreferente() {
-    if (!seleccionada || !codigoPreferente.trim()) return;
-    setCargando(true);
-    const { error } = await supabase.rpc("cobrar_preferente", {
-      p_cuenta_id: seleccionada.id,
-      p_codigo: codigoPreferente,
-    });
-    setCargando(false);
-    if (error) {
-      alert(error.message.includes("inválida") ? "Contraseña Preferente inválida o ya usada." : `Error: ${error.message}`);
-      return;
-    }
-    const cerrada = seleccionada;
-    setCodigoPreferente("");
-    setCuentaIdSeleccionada(null);
-    await cargar();
-    iniciarImpresion(cerrada, false, true); // ticket con la leyenda "PREFERENTE: SIN COBRO"
   }
 
   // ---------- Cuentas en $0: solo se cancelan (desaparecen sin registro) ----------
@@ -296,14 +327,18 @@ export default function VistaCaja({
     TARJETA: "Tarjeta",
     TRANSFERENCIA: "Transferencia",
     PREFERENTE: "Preferente",
+    CORTESIA: "Cortesía",
   };
 
   return (
     <main className="mx-auto w-full max-w-6xl space-y-5 px-4 py-6">
       <Conexion conectado={conectado} />
 
-      <div className="max-w-md">
-        <BotonImpresora destino="caja" titulo="Impresora de tickets (caja)" />
+      <div className="flex flex-wrap items-start gap-3">
+        <div className="w-full max-w-md">
+          <BotonImpresora destino="caja" />
+        </div>
+        <CorteCaja />
       </div>
 
       {errorCarga && (
@@ -443,7 +478,7 @@ export default function VistaCaja({
                     <div className="flex gap-2">
                       <button
                         className="flex-1 rounded-lg bg-paliacate py-2 font-semibold text-white"
-                        onClick={() => iniciarImpresion(errorImpresion.cuenta, errorImpresion.sinPermiso, errorImpresion.preferente)}
+                        onClick={() => iniciarImpresion(errorImpresion.cuenta, errorImpresion.sinPermiso)}
                       >
                         {errorImpresion.sinPermiso ? "Conectar e imprimir" : "Reintentar"}
                       </button>
@@ -472,10 +507,48 @@ export default function VistaCaja({
                   {pidioCuentaSeleccionada ? "Imprimir ticket de cuenta" : "Esperando que el mesero pida la cuenta"}
                 </button>
 
+                {/* Código de descuento (opcional) */}
+                <div className="space-y-2">
+                  <span className="text-sm font-semibold">Código de descuento (opcional)</span>
+                  {codigo ? (
+                    <div className="flex items-center justify-between rounded-xl bg-hoja-claro px-4 py-3">
+                      <span>
+                        <strong className="block">{etiquetaCodigo(codigo)}</strong>
+                        <span className="text-sm">
+                          {dinero(totalCalculado)} − {dinero(descuento)} = <strong>{dinero(totalConDescuento)}</strong>
+                        </span>
+                      </span>
+                      <button onClick={() => setCodigo(null)} className="text-sm font-semibold text-paliacate underline-offset-2 hover:underline">
+                        Quitar
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="flex gap-2">
+                      <input
+                        value={codigoTexto}
+                        onChange={(e) => setCodigoTexto(e.target.value.toUpperCase())}
+                        placeholder="Ej. K7M2PX"
+                        autoCapitalize="characters"
+                        autoComplete="off"
+                        maxLength={10}
+                        className="min-w-0 flex-1 rounded-xl border border-borde bg-white px-3 py-2.5 font-display text-lg font-bold uppercase tracking-[0.2em] focus:border-cafe focus:outline-none"
+                      />
+                      <button
+                        disabled={revisandoCodigo || codigoTexto.trim().length < 6}
+                        onClick={aplicarCodigo}
+                        className="rounded-xl border-2 border-cafe px-4 font-semibold text-cafe hover:bg-crema disabled:opacity-40"
+                      >
+                        {revisandoCodigo ? "…" : "Aplicar"}
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {!esCortesia && (
                 <div className="space-y-2">
                   <span className="text-sm font-semibold">Método de pago</span>
-                  <div className="grid grid-cols-2 gap-1 rounded-xl bg-crema-oscuro p-1">
-                    {(["EFECTIVO", "TARJETA", "TRANSFERENCIA", "PREFERENTE"] as MetodoPago[]).map((m) => (
+                  <div className="grid grid-cols-3 gap-1 rounded-xl bg-crema-oscuro p-1">
+                    {(["EFECTIVO", "TARJETA", "TRANSFERENCIA"] as MetodoPago[]).map((m) => (
                       <button
                         key={m}
                         onClick={() => setMetodo(m)}
@@ -489,7 +562,39 @@ export default function VistaCaja({
                   </div>
                 </div>
 
-                {metodo === "EFECTIVO" && (
+                )}
+
+                {!esCortesia && metodo === "TARJETA" && (
+                  <div className="space-y-3 rounded-xl bg-queso-claro p-4">
+                    <p className="text-xs text-cafe-medio">Cobra primero en la terminal Clip. Ya aprobado, copia la referencia del comprobante.</p>
+                    <label className="block">
+                      <span className="text-sm font-semibold">Referencia del comprobante Clip</span>
+                      <input
+                        value={referenciaClip}
+                        onChange={(e) => setReferenciaClip(e.target.value)}
+                        inputMode="numeric"
+                        autoComplete="off"
+                        className="mt-1 w-full rounded-xl border border-borde bg-white px-3 py-2.5 font-display text-xl font-bold tracking-wider focus:border-cafe focus:outline-none"
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="text-sm font-semibold">Propina en la terminal (opcional)</span>
+                      <div className="relative mt-1">
+                        <span className="absolute left-3 top-1/2 -translate-y-1/2 font-bold text-cafe-medio">$</span>
+                        <input
+                          type="number"
+                          inputMode="decimal"
+                          placeholder="0.00"
+                          value={propina}
+                          onChange={(e) => setPropina(e.target.value)}
+                          className="w-full rounded-xl border border-borde bg-white py-2.5 pl-7 pr-3 font-display text-xl font-bold tabular-nums focus:border-cafe focus:outline-none"
+                        />
+                      </div>
+                    </label>
+                  </div>
+                )}
+
+                {!esCortesia && metodo === "EFECTIVO" && (
                   <div className="space-y-3 rounded-xl bg-queso-claro p-4">
                     <label className="block">
                       <span className="text-sm font-semibold">Recibido</span>
@@ -532,40 +637,13 @@ export default function VistaCaja({
                   </div>
                 )}
 
-                {metodo === "PREFERENTE" ? (
-                  <div className="space-y-3 rounded-xl border-2 border-cafe/20 bg-crema p-4">
-                    <label className="block">
-                      <span className="text-sm font-semibold">Contraseña Preferente</span>
-                      <input
-                        value={codigoPreferente}
-                        onChange={(e) => setCodigoPreferente(e.target.value.toUpperCase())}
-                        placeholder="Ej. K7M2PX"
-                        autoCapitalize="characters"
-                        autoComplete="off"
-                        maxLength={10}
-                        className="mt-1 w-full rounded-xl border border-borde bg-white px-3 py-3 text-center font-display text-2xl font-bold uppercase tracking-[0.3em] focus:border-cafe focus:outline-none"
-                      />
-                    </label>
-                    <p className="text-xs text-cafe-medio">
-                      La cuenta se cierra sin cobro y el consumo queda registrado. Cada contraseña sirve una sola vez.
-                    </p>
-                    <button
-                      disabled={cargando || codigoPreferente.trim().length < 6}
-                      onClick={cerrarPreferente}
-                      className="w-full rounded-xl bg-cafe py-4 text-lg font-semibold text-crema shadow-sm transition-colors hover:bg-cafe/90 disabled:cursor-not-allowed disabled:opacity-40"
-                    >
-                      {cargando ? "Validando…" : "Validar y cerrar sin cobro"}
-                    </button>
-                  </div>
-                ) : (
-                  <button
-                    disabled={cargando || faltaDinero}
-                    onClick={cobrar}
-                    className="w-full rounded-xl bg-paliacate py-4 text-lg font-semibold text-white shadow-sm transition-colors hover:bg-paliacate-oscuro disabled:cursor-not-allowed disabled:opacity-40"
-                  >
-                    {cargando ? "Procesando…" : `Cobrar ${dinero(totalFinalCobro)}`}
-                  </button>
-                )}
+                <button
+                  disabled={cargando || (!esCortesia && (faltaDinero || (metodo === "TARJETA" && !referenciaClip.trim())))}
+                  onClick={cobrar}
+                  className="w-full rounded-xl bg-paliacate py-4 text-lg font-semibold text-white shadow-sm transition-colors hover:bg-paliacate-oscuro disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  {cargando ? "Procesando…" : esCortesia ? "Cerrar como cortesía" : `Cobrar ${dinero(totalFinalCobro)}`}
+                </button>
               </div>
             </div>
           )}
@@ -678,13 +756,25 @@ export default function VistaCaja({
             </div>
 
             <div style={{ borderTop: "1px dashed #000", paddingTop: "6px", padding: "6px 2px 0 2px" }}>
+              {ticketDescuento && (
+                <>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: "12px" }}>
+                    <span>Subtotal:</span>
+                    <span>{dinero(totalCuenta(ticketCuenta.pedidos))}</span>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: "12px" }}>
+                    <span>{ticketDescuento.etiqueta}:</span>
+                    <span>-{dinero(ticketDescuento.monto)}</span>
+                  </div>
+                </>
+              )}
               <div style={{ display: "flex", justifyContent: "space-between", fontSize: "16px", fontWeight: "900" }}>
-                <span>{ticketPreferente ? "CONSUMO:" : "TOTAL:"}</span>
-                <span>{dinero(totalCuenta(ticketCuenta.pedidos))}</span>
+                <span>TOTAL:</span>
+                <span>{dinero(totalCuenta(ticketCuenta.pedidos) - (ticketDescuento?.monto ?? 0))}</span>
               </div>
-              {ticketPreferente && (
+              {ticketDescuento && totalCuenta(ticketCuenta.pedidos) - ticketDescuento.monto <= 0 && (
                 <p style={{ margin: "6px 0 0 0", fontSize: "13px", fontWeight: "900", textAlign: "center" }}>
-                  PREFERENTE: SIN COBRO
+                  CORTESIA: SIN COBRO
                 </p>
               )}
               <p style={{ margin: "2px 0 0 0", fontSize: "10px", color: "#333", textAlign: "right" }}>

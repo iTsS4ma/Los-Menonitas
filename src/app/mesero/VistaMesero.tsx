@@ -5,7 +5,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import Conexion from "@/components/Conexion";
 import BotonImpresora from "@/components/BotonImpresora";
-import { elegirImpresora, ErrorImpresion, imprimir, ticketCancelacion, ticketComanda } from "@/lib/impresoraBT";
+import { elegirImpresora, ErrorImpresion, imprimir, LUGARES, ticketCancelacion, ticketComanda, type Destino as LugarImpresora } from "@/lib/impresoraBT";
 import { useTiempoReal } from "@/hooks/useTiempoReal";
 import { crearClienteNavegador } from "@/lib/supabase/client";
 import { cantidadTexto, dinero, errorTexto, nombreCuenta, totalCuenta } from "@/lib/formato";
@@ -61,7 +61,8 @@ export default function VistaMesero({ perfil, cuentaInicial = null }: { perfil: 
 
   // Estado para disparar la impresión del ticket de cancelación
   // Impresión de comandas por Bluetooth desde este celular
-  const [fallaImpresion, setFallaImpresion] = useState<{ bytes: Uint8Array; etiqueta: string; error: string; ids?: string[]; sinPermiso?: boolean } | null>(null);
+  // Lugares donde no salió la comanda (para reintentar solo en esos)
+  const [fallaImpresion, setFallaImpresion] = useState<{ bytes: Uint8Array; etiqueta: string; error: string; destinos: LugarImpresora[]; sinConectar: LugarImpresora[] } | null>(null);
 
   const cargar = useCallback(async () => {
     const [m, c, cat, p, o] = await Promise.all([
@@ -90,40 +91,41 @@ export default function VistaMesero({ perfil, cuentaInicial = null }: { perfil: 
 
   // Manda a todas las impresoras de cocina de este celular. Si alguna falla, muestra
   // el aviso para reintentar solo esa.
-  function registrarFalla(e: unknown, bytes: Uint8Array, etiqueta: string) {
-    if (e instanceof ErrorImpresion) {
-      setFallaImpresion({
-        bytes,
-        etiqueta,
-        error: e.fallidas.length ? e.message : "No hay impresoras de cocina conectadas en este celular.",
-        ids: e.fallidas.length ? e.fallidas.map((f) => f.id) : undefined,
-        sinPermiso: e.fallidas.length === 0 || e.fallidas.some((f) => f.sinPermiso),
-      });
-    } else {
-      setFallaImpresion({ bytes, etiqueta, error: e instanceof Error ? e.message : "Error al imprimir." });
+  // La comanda sale completa en Cocina y en Garnachas, una después de otra.
+  // Si una falla, la otra sí imprime y el aviso permite reintentar solo la que falló.
+  async function imprimirEnCocinas(bytes: Uint8Array, etiqueta: string, destinos: LugarImpresora[] = ["cocina", "garnachas"]) {
+    const fallidos: LugarImpresora[] = [];
+    const sinConectar: LugarImpresora[] = [];
+    const errores: string[] = [];
+    for (const d of destinos) {
+      try {
+        await imprimir(d, bytes);
+      } catch (e) {
+        fallidos.push(d);
+        const sinImpresora = e instanceof ErrorImpresion && (e.fallidas.length === 0 || e.fallidas.some((f) => f.sinPermiso));
+        if (sinImpresora) sinConectar.push(d);
+        errores.push(`${LUGARES[d].nombre}: ${sinImpresora ? "sin conectar" : e instanceof Error ? e.message : "error"}`);
+      }
     }
+    setFallaImpresion(fallidos.length ? { bytes, etiqueta, error: errores.join(" · "), destinos: fallidos, sinConectar } : null);
   }
 
   async function imprimirSeguro(bytes: Uint8Array, etiqueta: string) {
-    try {
-      await imprimir("cocina", bytes);
-      setFallaImpresion(null);
-    } catch (e) {
-      registrarFalla(e, bytes, etiqueta);
-    }
+    await imprimirEnCocinas(bytes, etiqueta);
   }
 
-  // Reintento desde el aviso (es un toque del usuario, así que puede pedir reconectar)
+  // Reintento desde el aviso (es un toque del usuario, así que puede abrir la ventana para conectar)
   async function reintentarImpresion() {
     if (!fallaImpresion) return;
-    const { bytes, etiqueta, ids, sinPermiso } = fallaImpresion;
+    const { bytes, etiqueta, destinos, sinConectar } = fallaImpresion;
     try {
-      if (sinPermiso) await elegirImpresora("cocina");
-      await imprimir("cocina", bytes, ids);
-      setFallaImpresion(null);
+      if (sinConectar.length) await elegirImpresora(sinConectar[0]);
     } catch (e) {
-      registrarFalla(e, bytes, etiqueta);
+      const msg = e instanceof Error ? e.message : "";
+      if (!/cancel/i.test(msg)) return setFallaImpresion({ ...fallaImpresion, error: msg });
+      return;
     }
+    await imprimirEnCocinas(bytes, etiqueta, destinos);
   }
 
   // Imprime la comanda de una ronda (al enviarla o al reimprimir)
@@ -170,7 +172,7 @@ export default function VistaMesero({ perfil, cuentaInicial = null }: { perfil: 
       </p>
       <div className="flex gap-2">
         <button onClick={reintentarImpresion} className="flex-1 rounded-lg bg-paliacate py-2.5 font-semibold text-white">
-          {fallaImpresion.sinPermiso ? "Conectar e imprimir" : "Reintentar impresión"}
+          {fallaImpresion.sinConectar.length ? `Conectar ${LUGARES[fallaImpresion.sinConectar[0]].nombre} e imprimir` : "Reintentar impresión"}
         </button>
         <button onClick={() => setFallaImpresion(null)} className="rounded-lg border border-paliacate/40 px-3 font-semibold">
           Omitir
@@ -483,7 +485,10 @@ export default function VistaMesero({ perfil, cuentaInicial = null }: { perfil: 
       )}
 
       {avisoImpresion}
-      <BotonImpresora destino="cocina" titulo="Impresoras de cocina" varias />
+      <div className="space-y-2">
+        <BotonImpresora destino="cocina" />
+        <BotonImpresora destino="garnachas" />
+      </div>
 
       <div className="grid grid-cols-2 gap-1 rounded-2xl bg-crema-oscuro p-1">
         {(["MESAS", "LLEVAR"] as const).map((p) => (

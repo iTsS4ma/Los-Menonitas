@@ -5,7 +5,13 @@ import { exigirRol, type Rol } from "@/lib/perfil";
 import { crearClienteAdmin } from "@/lib/supabase/admin";
 
 type Resultado = { ok: true } | { ok: false; error: string };
-const ROLES: Rol[] = ["ADMIN", "MESERO", "CAJERO"];
+// Desde la página solo se dan de alta meseros y cajeros; los administradores, desde la base
+const ROLES: Rol[] = ["MESERO", "CAJERO"];
+
+async function esAdministrador(id: string) {
+  const { data } = await crearClienteAdmin().from("usuarios").select("rol").eq("id", id).maybeSingle();
+  return data?.rol === "ADMIN";
+}
 
 export async function crearPersonal(datos: {
   nombre: string; email: string; password: string; rol: Rol; puede_cobrar: boolean;
@@ -43,9 +49,8 @@ export async function crearPersonal(datos: {
 export async function actualizarPersonal(id: string, cambios: {
   rol?: Rol; puede_cobrar?: boolean; activo?: boolean; nombre?: string;
 }): Promise<Resultado> {
-  const yo = await exigirRol(["ADMIN"]);
-  if (id === yo.id && (cambios.activo === false || (cambios.rol && cambios.rol !== "ADMIN")))
-    return { ok: false, error: "No puedes quitarte a ti mismo el acceso de administrador" };
+  await exigirRol(["ADMIN"]);
+  if (await esAdministrador(id)) return { ok: false, error: "Los administradores solo se modifican desde la base de datos" };
   if (cambios.rol && !ROLES.includes(cambios.rol)) return { ok: false, error: "Rol no válido" };
   const datos = { ...cambios };
   if (datos.rol === "ADMIN" || datos.rol === "CAJERO") datos.puede_cobrar = true;
@@ -58,6 +63,7 @@ export async function actualizarPersonal(id: string, cambios: {
 
 export async function cambiarPassword(id: string, password: string): Promise<Resultado> {
   await exigirRol(["ADMIN"]);
+  if (await esAdministrador(id)) return { ok: false, error: "Los administradores solo se modifican desde la base de datos" };
   if (password.length < 8) return { ok: false, error: "La contraseña debe tener al menos 8 caracteres" };
   const { error } = await crearClienteAdmin().auth.admin.updateUserById(id, { password });
   if (error) return { ok: false, error: error.message };
@@ -68,7 +74,8 @@ export async function cambiarPassword(id: string, password: string): Promise<Res
 // pero su nombre se conserva en las ventas que atendió o cobró.
 export async function eliminarPersonal(id: string): Promise<Resultado> {
   const yo = await exigirRol(["ADMIN"]);
-  if (id === yo.id) return { ok: false, error: "No puedes eliminarte a ti mismo" };
+  if (id === yo.id || (await esAdministrador(id)))
+    return { ok: false, error: "Los administradores solo se modifican desde la base de datos" };
   const admin = crearClienteAdmin();
 
   const { error: e1 } = await admin

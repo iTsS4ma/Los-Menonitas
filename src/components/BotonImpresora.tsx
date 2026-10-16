@@ -4,28 +4,23 @@ import { useEffect, useState } from "react";
 import {
   elegirImpresora,
   escucharImpresoras,
-  quitarImpresora,
+  imprimir,
+  LUGARES,
   recuperarImpresoras,
+  ticketPrueba,
   type Destino,
   type EstadoImpresoras,
 } from "@/lib/impresoraBT";
 
 /**
- * Configuración de impresoras Bluetooth de este equipo.
- * - varias = true: se pueden agregar varias (cocina); la comanda sale en todas.
- * - varias = false: una sola (caja).
+ * Un lugar fijo de impresora (Cocina, Garnachas o Caja) en este equipo.
+ * Tiene una sola impresora: conectar otra la reemplaza. Se vacía cada día nuevo.
  */
-export default function BotonImpresora({
-  destino,
-  titulo,
-  varias = false,
-}: {
-  destino: Destino;
-  titulo: string;
-  varias?: boolean;
-}) {
+export default function BotonImpresora({ destino }: { destino: Destino }) {
   const [estado, setEstado] = useState<EstadoImpresoras | null>(null);
   const [error, setError] = useState("");
+  const [probando, setProbando] = useState(false);
+  const lugar = LUGARES[destino];
 
   useEffect(() => {
     const quitar = escucharImpresoras(destino, setEstado);
@@ -34,71 +29,69 @@ export default function BotonImpresora({
   }, [destino]);
 
   if (!estado) return null;
-
   if (!estado.soportado) {
     return (
       <p className="rounded-xl bg-queso-claro px-3 py-2.5 text-sm">
-        Para imprimir por Bluetooth abre el sistema en <strong>Chrome</strong>.
+        Para imprimir abre el sistema en <strong>Chrome</strong> en un celular Android o en una computadora. En iPhone no se puede.
       </p>
     );
   }
 
-  async function elegir(reemplazar = false) {
+  const impresora = estado.impresoras[0];
+  const conectada = !!impresora?.lista;
+
+  async function conectar() {
     setError("");
     try {
-      await elegirImpresora(destino, reemplazar);
+      await elegirImpresora(destino);
     } catch (e) {
       const msg = e instanceof Error ? e.message : "";
-      if (!/cancel/i.test(msg)) setError(msg || "No se pudo elegir la impresora.");
+      if (!/cancel/i.test(msg)) setError(msg || "No se pudo conectar la impresora.");
     }
   }
 
-  const { impresoras } = estado;
-  const todasListas = impresoras.length > 0 && impresoras.every((i) => i.lista);
+  async function probar() {
+    setError("");
+    setProbando(true);
+    try {
+      await imprimir(destino, ticketPrueba(destino));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "No se pudo imprimir la prueba.");
+    }
+    setProbando(false);
+  }
 
   return (
-    <div
-      className={`space-y-2 rounded-xl px-3 py-2.5 text-sm ${
-        todasListas ? "bg-hoja-claro" : "border-2 border-dashed border-borde bg-white"
-      }`}
-    >
-      <div className="flex items-center justify-between">
-        <span className="font-semibold">{estado.imprimiendo ? "Imprimiendo…" : titulo}</span>
-        {(varias || impresoras.length === 0) && (
-          <button onClick={() => elegir(false)} className="text-xs font-semibold text-cafe underline-offset-2 hover:underline">
-            + Agregar impresora
+    <div className={`rounded-xl px-3 py-2.5 text-sm ${conectada ? "bg-hoja-claro" : "border-2 border-dashed border-paliacate/50 bg-white"}`}>
+      <div className="flex items-center justify-between gap-2">
+        <span className="flex items-center gap-2">
+          <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${conectada ? "bg-hoja" : "bg-paliacate"}`} />
+          <span>
+            <strong>Impresora {lugar.nombre}</strong>
+            <span className="block text-xs text-cafe-medio">
+              {estado.imprimiendo ? "Imprimiendo…" : conectada ? "Conectada" : `Sin conectar · elige la que termina en ${lugar.terminacion}`}
+            </span>
+          </span>
+        </span>
+        <span className="flex shrink-0 gap-2">
+          {conectada && (
+            <button
+              onClick={probar}
+              disabled={probando}
+              className="rounded-lg border border-borde bg-white px-3 py-1.5 text-xs font-semibold hover:border-cafe-medio disabled:opacity-40"
+            >
+              {probando ? "…" : "Probar"}
+            </button>
+          )}
+          <button
+            onClick={conectar}
+            className={`rounded-lg px-3 py-1.5 text-xs font-semibold ${conectada ? "border border-borde bg-white hover:border-cafe-medio" : "bg-paliacate text-white hover:bg-paliacate-oscuro"}`}
+          >
+            {conectada ? "Cambiar" : "Conectar"}
           </button>
-        )}
-        {!varias && impresoras.length > 0 && (
-          <button onClick={() => elegir(true)} className="text-xs font-semibold text-cafe-medio underline-offset-2 hover:underline">
-            Cambiar
-          </button>
-        )}
+        </span>
       </div>
-
-      {impresoras.length === 0 && <p className="text-cafe-medio">Ninguna impresora conectada en este equipo.</p>}
-
-      {impresoras.map((i) => (
-        <div key={i.id} className="flex items-center justify-between gap-2">
-          <span className="flex items-center gap-2">
-            <span className={`h-2.5 w-2.5 rounded-full ${i.lista ? "bg-hoja" : "bg-queso"}`} />
-            {i.nombre}
-          </span>
-          <span className="flex gap-3 text-xs font-semibold">
-            {!i.lista && (
-              <button onClick={() => elegir(false)} className="text-paliacate underline-offset-2 hover:underline">
-                Reconectar
-              </button>
-            )}
-            {varias && (
-              <button onClick={() => quitarImpresora(destino, i.id)} className="text-cafe-medio underline-offset-2 hover:underline">
-                Quitar
-              </button>
-            )}
-          </span>
-        </div>
-      ))}
-      {error && <p className="text-xs text-paliacate">{error}</p>}
+      {error && <p className="mt-1.5 text-xs text-paliacate">{error}</p>}
     </div>
   );
 }
