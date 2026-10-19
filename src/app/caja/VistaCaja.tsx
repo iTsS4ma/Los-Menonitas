@@ -534,7 +534,7 @@ export default function VistaCaja({
                       <input
                         value={codigoTexto}
                         onChange={(e) => setCodigoTexto(e.target.value.toUpperCase())}
-                        placeholder="Ej. K7M2PX"
+                        placeholder="Ej. K7M2PX"  
                         autoCapitalize="characters"
                         autoComplete="off"
                         maxLength={10}

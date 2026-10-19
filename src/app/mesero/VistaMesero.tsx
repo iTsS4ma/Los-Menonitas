@@ -298,7 +298,7 @@ export default function VistaMesero({ perfil, cuentaInicial = null }: { perfil: 
                         <span className="font-semibold">{cantidadTexto(d)}</span> {d.nombre_producto}
                         {d.nombre_opcion ? ` (${d.nombre_opcion})` : ""}
                         {(d.plato ?? 1) > 1 || (p.detalle_pedido || []).some((x) => (x.plato ?? 1) > 1) ? (
-                          <span className="ml-1.5 rounded bg-crema-oscuro px-1.5 text-xs font-bold text-cafe-medio">Plato {d.plato ?? 1}</span>
+                          <span className="ml-1.5 rounded bg-crema-oscuro px-1.5 text-xs font-bold text-cafe-medio">Persona {d.plato ?? 1}</span>
                         ) : null}
                         {d.con_quesillo && <span className="block text-xs font-semibold text-cafe">+ quesillo</span>}
                         {(d.sin_cebolla || d.sin_cilantro) && (
@@ -666,7 +666,7 @@ function Captura({
             onClick={() => setPlato(n)}
             className={`shrink-0 rounded-full px-3.5 py-2 text-sm font-bold ${plato === n ? "bg-paliacate text-white" : "border border-borde bg-crema/50"}`}
           >
-            Plato {n}
+            Persona {n}
           </button>
         ))}
         <button
@@ -676,7 +676,7 @@ function Captura({
           }}
           className="shrink-0 rounded-full border-2 border-dashed border-cafe-medio px-3 py-1.5 text-sm font-semibold"
         >
-          + Plato
+          + Persona
         </button>
       </div>
 
@@ -720,7 +720,7 @@ function Captura({
           .sort((a, b) => a - b)
           .map((n) => (
             <div key={n} className="space-y-2">
-              {numPlatos > 1 && <p className="pt-1 text-xs font-extrabold uppercase tracking-wider text-cafe-medio">Plato {n}</p>}
+              {numPlatos > 1 && <p className="pt-1 text-xs font-extrabold uppercase tracking-wider text-cafe-medio">Persona {n}</p>}
               {lineas
                 .filter((l) => l.plato === n)
                 .map((l) => (
@@ -801,7 +801,7 @@ function Captura({
                         >
                           {Array.from({ length: numPlatos }, (_, i) => i + 1).map((k) => (
                             <option key={k} value={k}>
-                              Plato {k}
+                              Persona {k}
                             </option>
                           ))}
                         </select>
