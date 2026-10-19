@@ -659,7 +659,7 @@ function Captura({
       </div>
 
       <div className="mb-3 flex items-center gap-2 overflow-x-auto rounded-2xl border border-borde bg-white px-3 py-2">
-        <span className="shrink-0 text-sm font-semibold text-cafe-medio">Agregar al:</span>
+        <span className="shrink-0 text-sm font-semibold text-cafe-medio">Agregar a:</span>
         {Array.from({ length: numPlatos }, (_, i) => i + 1).map((n) => (
           <button
             key={n}
