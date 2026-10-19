@@ -14,13 +14,23 @@ type Cierre = {
   contado: number;
   diferencia: number;
   fondo?: number;
+  desglose?: Record<string, number> | null;
 };
 export type EstadoCaja = {
   estado: "SIN_ABRIR" | "ABIERTA" | "CERRADA";
   fondo?: number;
+  /** Con cuánto abre hoy: lo que quedó al cerrar (null = primera vez) */
+  fondo_siguiente?: number | null;
   movimientos?: Movimiento[];
   cierre?: Cierre | null;
 };
+
+// Billetes y monedas que se cuentan al cerrar
+const BILLETES = [1000, 500, 200, 100, 50, 20];
+const MONEDAS = [20, 10, 5, 2, 1, 0.5];
+const etiquetaDen = (d: number) => (d < 1 ? "50¢" : `$${d}`);
+// Las monedas de $20 se guardan aparte de los billetes de $20
+const claveDen = (d: number, moneda: boolean) => (moneda && d === 20 ? "20m" : String(d));
 
 const hora = (iso: string) =>
   new Date(iso).toLocaleTimeString("es-MX", { timeZone: "America/Mexico_City", hour: "2-digit", minute: "2-digit", hour12: true });
@@ -40,7 +50,7 @@ export default function ControlCaja({ onCambio }: { onCambio: (e: EstadoCaja | n
   const [tipo, setTipo] = useState<"SALIDA" | "ENTRADA">("SALIDA");
   const [monto, setMonto] = useState("");
   const [motivo, setMotivo] = useState("");
-  const [contado, setContado] = useState("");
+  const [conteo, setConteo] = useState<Record<string, string>>({});
   const [notas, setNotas] = useState("");
   const [resultado, setResultado] = useState<Cierre | null>(null);
 
@@ -72,9 +82,11 @@ export default function ControlCaja({ onCambio }: { onCambio: (e: EstadoCaja | n
     return data ?? true;
   }
 
+  // Normalmente el fondo lo pone el sistema (lo que quedó ayer); solo la primera vez se escribe
   async function abrir() {
-    if (fondo === "" || Number(fondo) < 0) return setError("Escribe con cuánto efectivo empieza la caja.");
-    if (await correr(() => supabase.rpc("abrir_caja", { p_fondo: Number(fondo) }))) setFondo("");
+    const primeraVez = estado?.fondo_siguiente == null;
+    if (primeraVez && (fondo === "" || Number(fondo) < 0)) return setError("Escribe con cuánto efectivo empieza la caja.");
+    if (await correr(() => supabase.rpc("abrir_caja", primeraVez ? { p_fondo: Number(fondo) } : {}))) setFondo("");
   }
 
   async function guardarMovimiento() {
@@ -87,13 +99,24 @@ export default function ControlCaja({ onCambio }: { onCambio: (e: EstadoCaja | n
     }
   }
 
+  // Total contado: suma de billetes y monedas
+  const totalConteo = [...BILLETES.map((d) => [d, false] as const), ...MONEDAS.map((d) => [d, true] as const)].reduce(
+    (t, [d, m]) => t + d * (Math.max(0, Math.trunc(Number(conteo[claveDen(d, m)]) || 0))),
+    0
+  );
+
   async function cerrar() {
-    if (contado === "") return setError("Escribe cuánto efectivo contaste.");
-    if (!window.confirm(`¿Cerrar la caja con ${dinero(Number(contado))} contados? Ya no se podrá cobrar en efectivo hoy.`)) return;
-    const data = await correr(() => supabase.rpc("cerrar_caja", { p_contado: Number(contado), p_notas: notas }));
+    // La base recibe cuántas piezas hay de cada valor (billetes y monedas de $20 se suman juntos)
+    const desglose: Record<string, number> = {};
+    [...BILLETES.map((d) => [d, false] as const), ...MONEDAS.map((d) => [d, true] as const)].forEach(([d, m]) => {
+      const n = Math.max(0, Math.trunc(Number(conteo[claveDen(d, m)]) || 0));
+      if (n) desglose[String(d)] = (desglose[String(d)] ?? 0) + n;
+    });
+    if (!window.confirm(`¿Cerrar la caja con ${dinero(totalConteo)} contados? Ya no se podrá cobrar en efectivo hoy.`)) return;
+    const data = await correr(() => supabase.rpc("cerrar_caja", { p_desglose: desglose, p_notas: notas }));
     if (data && data !== true) {
       setResultado(data as Cierre);
-      setContado("");
+      setConteo({});
       setNotas("");
     }
   }
@@ -116,6 +139,13 @@ export default function ControlCaja({ onCambio }: { onCambio: (e: EstadoCaja | n
             ["", ""],
             ["Efectivo esperado", dinero(Number(c.esperado))],
             ["Efectivo contado", dinero(Number(c.contado))],
+            ...(c.desglose
+              ? ([["", ""], ["Conteo:", ""]] as [string, string][]).concat(
+                  Object.entries(c.desglose)
+                    .sort((a, b) => Number(b[0]) - Number(a[0]))
+                    .map(([d, n]) => [`  ${n} x ${etiquetaDen(Number(d))}`, dinero(Number(d) * Number(n))] as [string, string])
+                )
+              : []),
           ],
           etiquetaTotal: Number(c.diferencia) < 0 ? "FALTA" : "SOBRA",
           total: dinero(Math.abs(Number(c.diferencia))),
@@ -133,34 +163,53 @@ export default function ControlCaja({ onCambio }: { onCambio: (e: EstadoCaja | n
 
   // ----- Caja sin abrir: hay que registrar el fondo antes de cobrar en efectivo -----
   if (estado.estado === "SIN_ABRIR") {
+    const primeraVez = estado.fondo_siguiente == null;
     return (
       <div className="w-full space-y-3 rounded-2xl border-2 border-paliacate bg-white p-5">
         <div>
           <h2 className="font-display text-2xl font-extrabold">Abrir caja</h2>
           <p className="text-sm text-cafe-medio">
-            Cuenta el efectivo con el que empiezas el día. Sin abrir la caja no se puede cobrar en efectivo.
+            {primeraVez
+              ? "Es la primera vez: cuenta el efectivo con el que empieza la caja y escríbelo. Desde mañana el sistema lo pone solo."
+              : "La caja empieza con el dinero que quedó al cerrar el día anterior. Sin abrir la caja no se puede cobrar en efectivo."}
           </p>
         </div>
-        <div className="flex max-w-sm gap-2">
-          <div className="relative flex-1">
-            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-lg font-bold text-cafe-medio">$</span>
-            <input
-              type="number"
-              inputMode="decimal"
-              value={fondo}
-              onChange={(e) => setFondo(e.target.value)}
-              placeholder="0.00"
-              className={`${campo} pl-8 font-display text-2xl font-bold`}
-            />
+        {primeraVez ? (
+          <div className="flex max-w-sm gap-2">
+            <div className="relative flex-1">
+              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-lg font-bold text-cafe-medio">$</span>
+              <input
+                type="number"
+                inputMode="decimal"
+                value={fondo}
+                onChange={(e) => setFondo(e.target.value)}
+                placeholder="0.00"
+                className={`${campo} pl-8 font-display text-2xl font-bold`}
+              />
+            </div>
+            <button
+              disabled={ocupado || fondo === ""}
+              onClick={abrir}
+              className="rounded-xl bg-paliacate px-6 font-semibold text-white hover:bg-paliacate-oscuro disabled:opacity-40"
+            >
+              Abrir caja
+            </button>
           </div>
-          <button
-            disabled={ocupado || fondo === ""}
-            onClick={abrir}
-            className="rounded-xl bg-paliacate px-6 font-semibold text-white hover:bg-paliacate-oscuro disabled:opacity-40"
-          >
-            Abrir caja
-          </button>
-        </div>
+        ) : (
+          <div className="flex flex-wrap items-center gap-4">
+            <p>
+              <span className="block text-xs font-semibold uppercase tracking-wider text-cafe-medio">Fondo inicial</span>
+              <span className="font-display text-3xl font-extrabold">{dinero(Number(estado.fondo_siguiente))}</span>
+            </p>
+            <button
+              disabled={ocupado}
+              onClick={abrir}
+              className="rounded-xl bg-paliacate px-8 py-3 font-semibold text-white hover:bg-paliacate-oscuro disabled:opacity-40"
+            >
+              {ocupado ? "Abriendo…" : "Abrir caja"}
+            </button>
+          </div>
+        )}
         {error && <p className="text-sm text-paliacate">{error}</p>}
       </div>
     );
@@ -289,16 +338,43 @@ export default function ControlCaja({ onCambio }: { onCambio: (e: EstadoCaja | n
                 <div>
                   <h2 className="font-display text-2xl font-extrabold">Cerrar caja</h2>
                   <p className="text-sm text-cafe-medio">
-                    Cuenta todo el efectivo de la caja (incluido el fondo) y escribe el total. Después de cerrar ya no se puede cobrar en efectivo hoy.
+                    Cuenta todo el efectivo de la caja (incluido el fondo) y escribe cuántos hay de cada billete y moneda. El sistema hace la suma.
+                    Después de cerrar ya no se puede cobrar en efectivo hoy.
                   </p>
                 </div>
-                <div className="relative">
-                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-lg font-bold text-cafe-medio">$</span>
-                  <input type="number" inputMode="decimal" placeholder="Efectivo contado" value={contado} onChange={(e) => setContado(e.target.value)} className={`${campo} pl-8 font-display text-2xl font-bold`} />
+                {([["Billetes", BILLETES, false], ["Monedas", MONEDAS, true]] as const).map(([titulo, lista, moneda]) => (
+                  <div key={titulo}>
+                    <p className="mb-1.5 text-xs font-extrabold uppercase tracking-wider text-cafe-medio">{titulo}</p>
+                    <div className="space-y-1.5">
+                      {lista.map((d) => {
+                        const k = claveDen(d, moneda);
+                        const n = Math.max(0, Math.trunc(Number(conteo[k]) || 0));
+                        return (
+                          <div key={k} className="grid grid-cols-[4.5rem_1fr_5.5rem] items-center gap-2">
+                            <span className="font-display text-lg font-bold">{etiquetaDen(d)}</span>
+                            <input
+                              type="number"
+                              inputMode="numeric"
+                              min={0}
+                              placeholder="0"
+                              value={conteo[k] ?? ""}
+                              onChange={(e) => setConteo({ ...conteo, [k]: e.target.value })}
+                              className={`${campo} py-2 text-center text-lg font-bold`}
+                            />
+                            <span className="text-right text-sm tabular-nums text-cafe-medio">{n ? dinero(n * d) : "—"}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ))}
+                <div className="flex items-baseline justify-between rounded-xl bg-queso-claro px-4 py-3">
+                  <span className="font-semibold">Total contado</span>
+                  <span className="font-display text-3xl font-extrabold tabular-nums">{dinero(totalConteo)}</span>
                 </div>
                 <input placeholder="Notas (opcional)" value={notas} onChange={(e) => setNotas(e.target.value)} className={campo} />
                 <button
-                  disabled={ocupado || contado === ""}
+                  disabled={ocupado}
                   onClick={cerrar}
                   className="w-full rounded-xl bg-cafe py-3 font-semibold text-crema hover:bg-cafe/90 disabled:opacity-40"
                 >

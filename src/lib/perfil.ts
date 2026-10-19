@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation";
 import { crearClienteServidor } from "@/lib/supabase/server";
 
-export type Rol = "ADMIN" | "MESERO" | "CAJERO";
+export type Rol = "ADMIN" | "MESERO" | "CAJERO" | "COCINA";
 
 export type Perfil = {
   id: string;
@@ -14,6 +14,7 @@ export const rutaPorRol: Record<Rol, string> = {
   ADMIN: "/admin",
   MESERO: "/mesero",
   CAJERO: "/caja",
+  COCINA: "/cocina",
 };
 
 // Devuelve el perfil del usuario con sesión, o null

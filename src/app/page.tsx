@@ -1,64 +1,60 @@
 import Image from "next/image";
 import Link from "next/link";
-import { crearClienteAdmin } from "@/lib/supabase/admin";
 import Horario from "./Horario";
 
-// Página pública para clientes. El menú se lee de la base (lo que se edita en
-// Admin aparece aquí solo) y se actualiza cada 5 minutos.
-export const revalidate = 300;
+// Página pública para clientes. El menú está escrito aquí mismo para que SIEMPRE
+// se vea, aunque falle la base de datos. Si cambian precios o platillos, se
+// actualiza la lista MENU de abajo (además de Admin → Menú).
 
-// Identificador del restaurante en Google (Place ID): abre directo la ruta y el formulario de reseña
 const PLACE_ID = "ChIJk1p5lqT50YUR2eiYO0ZvVVk";
 const COMO_LLEGAR = `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent("Los Menonitas")}&destination_place_id=${PLACE_ID}`;
 const DEJAR_RESENA = `https://search.google.com/local/writereview?placeid=${PLACE_ID}`;
 const DIRECCION = "Av. Insurgentes Nte. 1681, Local 6, Tepeyac Insurgentes, Gustavo A. Madero, 07800, CDMX";
 const TELEFONO = "55 8537 1956"; // el de Google Maps
 // Número de WhatsApp a 10 dígitos (ej. "5585371956"). Mientras esté vacío, el botón no aparece.
-const WHATSAPP = "";
+const WHATSAPP = "5665063395";
 const MENSAJE_WA = "Hola, quiero hacer un pedido para llevar en Los Menonitas";
 
-type Categoria = { id: string; nombre: string; orden: number };
-type Producto = {
-  id: string;
-  categoria_id: string;
-  nombre: string;
-  precio: number;
-  unidad: "PIEZA" | "KG";
-  descripcion: string | null;
-  disponible: boolean;
-  orden: number;
-};
+type Platillo = { nombre: string; precio: string; descripcion?: string };
+type Seccion = { nombre: string; platillos: Platillo[]; nota?: string };
 
-async function obtenerMenu() {
-  try {
-    const db = crearClienteAdmin();
-    const [c, p] = await Promise.all([
-      db.from("categorias").select("id, nombre, orden").order("orden"),
-      db
-        .from("productos")
-        .select("id, categoria_id, nombre, precio, unidad, descripcion, disponible, orden")
-        .eq("activo", true)
-        .eq("eliminado", false)
-        .order("orden"),
-    ]);
-    const productos = ((p.data ?? []) as Producto[]).filter((x) => x.nombre !== "Quesillo extra");
-    const quesillo = ((p.data ?? []) as Producto[]).find((x) => x.nombre === "Quesillo extra");
-    const categorias = ((c.data ?? []) as Categoria[])
-      .map((cat) => ({ ...cat, productos: productos.filter((x) => x.categoria_id === cat.id) }))
-      .filter((cat) => cat.productos.length > 0);
-    return { categorias, quesillo: quesillo ? Number(quesillo.precio) : null };
-  } catch {
-    return { categorias: [], quesillo: null };
-  }
-}
-
-const precio = (p: Producto) => `$${Number(p.precio).toFixed(0)}${p.unidad === "KG" ? " / kg" : ""}`;
-// Quita la palabra de la categoría para que se lea como en el menú impreso ("Gordita sencilla" → "Sencilla")
-const corto = (nombre: string, categoria: string) => {
-  const raiz = categoria.toLowerCase().replace(/s$/, "").replace(/es$/, "");
-  const limpio = nombre.replace(new RegExp(`^${raiz}s?\\s+`, "i"), "");
-  return limpio.charAt(0).toUpperCase() + limpio.slice(1);
-};
+const MENU: Seccion[] = [
+  { nombre: "Gorditas", platillos: [
+    { nombre: "Sencilla", precio: "$25", descripcion: "De chicharrón prensado" },
+    { nombre: "Especial", precio: "$45", descripcion: "Con maciza" },
+  ] },
+  { nombre: "Quesadillas", platillos: [
+    { nombre: "Sencilla", precio: "$25", descripcion: "De quesillo" },
+    { nombre: "Especial", precio: "$45", descripcion: "Quesillo con maciza" },
+  ] },
+  { nombre: "Sopes", platillos: [
+    { nombre: "Sencillo", precio: "$20", descripcion: "Frijol, crema y queso" },
+    { nombre: "Especial", precio: "$45", descripcion: "Sencillo con maciza" },
+  ] },
+  { nombre: "Tacos", platillos: [
+    { nombre: "Taco", precio: "$30", descripcion: "Maciza, cuerito, buche, costilla, surtida o longaniza" },
+    { nombre: "Combinado", precio: "$30", descripcion: "Dos ingredientes a elegir" },
+  ] },
+  { nombre: "Tortas", platillos: [
+    { nombre: "Torta", precio: "$50", descripcion: "Maciza, cuerito, buche, costilla o surtida" },
+    { nombre: "Combinada", precio: "$50", descripcion: "Dos ingredientes a elegir" },
+    { nombre: "De chilaquiles", precio: "$75", descripcion: "Chilaquiles con carnitas" },
+  ] },
+  { nombre: "Chilaquiles", platillos: [
+    { nombre: "Sencillos", precio: "$45", descripcion: "Crema, queso y aguacate" },
+    { nombre: "Especiales", precio: "$75", descripcion: "Con maciza" },
+  ] },
+  { nombre: "Por kilo", platillos: [
+    { nombre: "Chamorro", precio: "$120 / pza" },
+    { nombre: "Carnitas", precio: "$450 / kg" },
+    { nombre: "Chicharrón", precio: "$220 / kg" },
+    { nombre: "Longaniza", precio: "$160 / kg" },
+  ] },
+  { nombre: "Bebidas", platillos: [
+    { nombre: "Coca Cola, Sprite, Sidral Mundet, Topo Chico o agua natural", precio: "$30" },
+    { nombre: "Café", precio: "$20" },
+  ] },
+];
 
 // Borde de cuadritos rojos, como el mantel y el menú impreso
 const cuadritos = {
@@ -66,8 +62,7 @@ const cuadritos = {
   backgroundSize: "14px 14px",
 };
 
-export default async function Inicio() {
-  const { categorias, quesillo } = await obtenerMenu();
+export default function Inicio() {
   const wa = WHATSAPP ? `https://wa.me/52${WHATSAPP}?text=${encodeURIComponent(MENSAJE_WA)}` : null;
 
   return (
@@ -111,35 +106,29 @@ export default async function Inicio() {
         <div className="mx-auto max-w-5xl px-5">
           <h2 className="mb-2 text-center font-display text-4xl font-black uppercase tracking-wide text-paliacate">Menú</h2>
           <div className="mb-10" />
-          {categorias.length === 0 ? (
-            <p className="text-center text-cafe-medio">El menú no está disponible en este momento.</p>
-          ) : (
-            <div className="grid gap-6 md:grid-cols-2">
-              {categorias.map((cat) => (
-                <article key={cat.id} className="rounded-sm border-[3px] border-double border-paliacate bg-crema p-5 shadow-[0_1px_0_#e6d5ba]">
-                  <h3 className="mb-3 text-center font-display text-2xl font-black uppercase tracking-wider text-paliacate">{cat.nombre}</h3>
-                  <ul className="space-y-2.5">
-                    {cat.productos.map((p) => (
-                      <li key={p.id} className={p.disponible ? "" : "opacity-50"}>
-                        <div className="flex items-baseline gap-2">
-                          <span className="font-semibold">{corto(p.nombre, cat.nombre)}</span>
-                          <span className="flex-1 border-b-2 border-dotted border-cafe/30" />
-                          <span className="font-display font-bold text-paliacate">{p.disponible ? precio(p) : "Agotado"}</span>
-                        </div>
-                        {p.descripcion && <p className="text-sm italic text-cafe-medio">{p.descripcion}</p>}
-                      </li>
-                    ))}
-                  </ul>
-                </article>
-              ))}
-            </div>
-          )}
-          {quesillo && (
-            <p className="mt-6 text-center text-sm">
-              <strong className="uppercase">Quesillo extra +${quesillo.toFixed(0)}</strong>{" "}
-              <span className="text-cafe-medio">en gorditas, sopes, tacos, tortas y chilaquiles</span>
-            </p>
-          )}
+          <div className="grid gap-6 md:grid-cols-2">
+            {MENU.map((sec) => (
+              <article key={sec.nombre} className="rounded-sm border-[3px] border-double border-paliacate bg-crema p-5 shadow-[0_1px_0_#e6d5ba]">
+                <h3 className="mb-3 text-center font-display text-2xl font-black uppercase tracking-wider text-paliacate">{sec.nombre}</h3>
+                <ul className="space-y-2.5">
+                  {sec.platillos.map((p) => (
+                    <li key={p.nombre}>
+                      <div className="flex items-baseline gap-2">
+                        <span className="font-semibold">{p.nombre}</span>
+                        <span className="flex-1 border-b-2 border-dotted border-cafe/30" />
+                        <span className="shrink-0 font-display font-bold text-paliacate">{p.precio}</span>
+                      </div>
+                      {p.descripcion && <p className="text-sm italic text-cafe-medio">{p.descripcion}</p>}
+                    </li>
+                  ))}
+                </ul>
+              </article>
+            ))}
+          </div>
+          <p className="mt-6 text-center text-sm">
+            <strong className="uppercase">Quesillo extra +$10</strong>{" "}
+            <span className="text-cafe-medio">en gorditas, sopes, tacos, tortas y chilaquiles</span>
+          </p>
         </div>
       </section>
 
@@ -161,6 +150,14 @@ export default async function Inicio() {
               {TELEFONO}
             </a>
           </div>
+          {wa && (
+            <div>
+              <h3 className="text-sm font-semibold uppercase tracking-wider text-cafe-medio">WhatsApp</h3>
+              <a href={wa} target="_blank" rel="noopener" className="text-lg font-semibold underline decoration-hoja decoration-4 underline-offset-4">
+                56 6506 3395
+              </a>
+            </div>
+          )}
           <div className="flex flex-wrap gap-3 pt-1">
             <a href={COMO_LLEGAR} target="_blank" rel="noopener" className="rounded-full bg-paliacate px-5 py-2.5 font-semibold text-white hover:bg-paliacate-oscuro">
               Cómo llegar

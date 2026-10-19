@@ -1,11 +1,10 @@
 "use client";
 
 import { generarUUID } from "@/lib/formato";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import Conexion from "@/components/Conexion";
-import BotonImpresora from "@/components/BotonImpresora";
-import { elegirImpresora, ErrorImpresion, imprimir, LUGARES, ticketCancelacion, ticketComanda, type Destino as LugarImpresora } from "@/lib/impresoraBT";
+import { NOMBRE_ESTACION } from "@/lib/comandas";
 import { useTiempoReal } from "@/hooks/useTiempoReal";
 import { crearClienteNavegador } from "@/lib/supabase/client";
 import { cantidadTexto, dinero, errorTexto, nombreCuenta, totalCuenta } from "@/lib/formato";
@@ -19,27 +18,11 @@ type Linea = {
   cantidad?: number;
   monto?: number;
   quesillo: boolean;
+  sinCebolla: boolean;
+  sinCilantro: boolean;
+  plato: number;
   notas: string;
 };
-
-type DatosTicketCancelacion = {
-  cuentaNombre: string;
-  ronda: number;
-  items: { nombre: string; cantidad: string; notas?: string }[];
-  motivo: string;
-  hora: string;
-};
-
-
-
-function horaActualMX() {
-  return new Intl.DateTimeFormat("es-MX", {
-    timeZone: "America/Mexico_City",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: true,
-  }).format(new Date());
-}
 
 // Cuenta que todavía no existe en la base: se crea al mandar la primera ronda
 type Borrador = { tipo: "MESA"; mesa: Mesa } | { tipo: "PARA_LLEVAR"; nombre: string };
@@ -59,17 +42,14 @@ export default function VistaMesero({ perfil, cuentaInicial = null }: { perfil: 
   const [aviso, setAviso] = useState("");
   const [solicitandoCuenta, setSolicitandoCuenta] = useState(false);
 
-  // Estado para disparar la impresión del ticket de cancelación
-  // Impresión de comandas por Bluetooth desde este celular
-  // Lugares donde no salió la comanda (para reintentar solo en esos)
-  const [fallaImpresion, setFallaImpresion] = useState<{ bytes: Uint8Array; etiqueta: string; error: string; destinos: LugarImpresora[]; sinConectar: LugarImpresora[] } | null>(null);
+  const [info, setInfo] = useState("");
 
   const cargar = useCallback(async () => {
     const [m, c, cat, p, o] = await Promise.all([
       supabase.from("mesas").select("*").eq("activa", true).order("numero"),
       supabase
         .from("cuentas")
-        .select("*, mesas(numero), pedidos(*, detalle_pedido(*))")
+        .select("*, mesas(numero), pedidos(*, detalle_pedido(*), comandas(*))")
         .in("estado", ["ABIERTA", "CUENTA_SOLICITADA"])
         .order("abierta_en"),
       supabase.from("categorias").select("*").order("orden"),
@@ -85,101 +65,32 @@ export default function VistaMesero({ perfil, cuentaInicial = null }: { perfil: 
     setOpciones((o.data as Opcion[]) || []);
   }, [supabase]);
 
-  const conectado = useTiempoReal("mesero", ["cuentas", "pedidos", "detalle_pedido"], cargar);
+  const conectado = useTiempoReal("mesero", ["cuentas", "pedidos", "detalle_pedido", "comandas"], cargar);
+
+  // Aviso (vibración) cuando cocina termina una ronda
+  const listasVistas = useRef<Set<string> | null>(null);
+  useEffect(() => {
+    const listas = new Set(cuentas.flatMap((c) => (c.pedidos || []).filter((p) => p.estado === "LISTO").map((p) => p.id)));
+    if (listasVistas.current && [...listas].some((id) => !listasVistas.current!.has(id))) {
+      try {
+        navigator.vibrate?.([200, 100, 200]);
+      } catch {}
+    }
+    listasVistas.current = listas;
+  }, [cuentas]);
 
   const cuenta = cuentas.find((c) => c.id === cuentaId) ?? null;
 
-  // Manda a todas las impresoras de cocina de este celular. Si alguna falla, muestra
-  // el aviso para reintentar solo esa.
-  // La comanda sale completa en Cocina y en Garnachas, una después de otra.
-  // Si una falla, la otra sí imprime y el aviso permite reintentar solo la que falló.
-  async function imprimirEnCocinas(bytes: Uint8Array, etiqueta: string, destinos: LugarImpresora[] = ["cocina", "garnachas"]) {
-    const fallidos: LugarImpresora[] = [];
-    const sinConectar: LugarImpresora[] = [];
-    const errores: string[] = [];
-    for (const d of destinos) {
-      try {
-        await imprimir(d, bytes);
-      } catch (e) {
-        fallidos.push(d);
-        const sinImpresora = e instanceof ErrorImpresion && (e.fallidas.length === 0 || e.fallidas.some((f) => f.sinPermiso));
-        if (sinImpresora) sinConectar.push(d);
-        errores.push(`${LUGARES[d].nombre}: ${sinImpresora ? "sin conectar" : e instanceof Error ? e.message : "error"}`);
-      }
-    }
-    setFallaImpresion(fallidos.length ? { bytes, etiqueta, error: errores.join(" · "), destinos: fallidos, sinConectar } : null);
+  // La comanda la imprime la estación de cocina; aquí solo se pide que la vuelva a imprimir
+  async function reimprimirRonda(pedidoId: string) {
+    setInfo("");
+    const ok = await ejecutar(() => supabase.rpc("reimprimir_ronda", { p_pedido: pedidoId }));
+    if (ok) setInfo("Se mandó a reimprimir en cocina.");
   }
 
-  async function imprimirSeguro(bytes: Uint8Array, etiqueta: string) {
-    await imprimirEnCocinas(bytes, etiqueta);
+  async function marcarEntregada(pedidoId: string) {
+    await ejecutar(() => supabase.from("pedidos").update({ estado: "ENTREGADO" }).eq("id", pedidoId));
   }
-
-  // Reintento desde el aviso (es un toque del usuario, así que puede abrir la ventana para conectar)
-  async function reintentarImpresion() {
-    if (!fallaImpresion) return;
-    const { bytes, etiqueta, destinos, sinConectar } = fallaImpresion;
-    try {
-      if (sinConectar.length) await elegirImpresora(sinConectar[0]);
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : "";
-      if (!/cancel/i.test(msg)) return setFallaImpresion({ ...fallaImpresion, error: msg });
-      return;
-    }
-    await imprimirEnCocinas(bytes, etiqueta, destinos);
-  }
-
-  // Imprime la comanda de una ronda (al enviarla o al reimprimir)
-  async function imprimirRonda(pedidoId: string) {
-    const { data } = await supabase
-      .from("pedidos")
-      .select("numero_ronda, cuenta_id, detalle_pedido(*, productos(descripcion)), cuentas(tipo, nombre_cliente, numero_orden, mesas(numero))")
-      .eq("id", pedidoId)
-      .single();
-    if (!data) return;
-    const p = data as unknown as Pedido & { cuentas: Cuenta };
-    const bytes = ticketComanda({
-      cuenta: nombreCuenta(p.cuentas),
-      ronda: p.numero_ronda,
-      hora: horaActualMX(),
-      mesero: perfil.nombre,
-      renglones: (p.detalle_pedido || [])
-        .filter((d) => d.estado === "ACTIVO")
-        .map((d) => ({
-          texto: `${cantidadTexto(d)} ${d.nombre_producto}${d.nombre_opcion ? ` (${d.nombre_opcion})` : ""}`,
-          detalle: d.productos?.descripcion ?? null,
-          quesillo: !!d.con_quesillo,
-          nota: d.notas,
-        })),
-    });
-    await imprimirSeguro(bytes, `Comanda ${nombreCuenta(p.cuentas)} · Ronda ${p.numero_ronda}`);
-  }
-
-  async function imprimirCancelacion(datos: DatosTicketCancelacion) {
-    const bytes = ticketCancelacion({
-      cuenta: datos.cuentaNombre,
-      ronda: datos.ronda,
-      hora: datos.hora,
-      motivo: datos.motivo,
-      renglones: datos.items.map((it) => ({ texto: `${it.cantidad} ${it.nombre}` })),
-    });
-    await imprimirSeguro(bytes, `Cancelación ${datos.cuentaNombre} · Ronda ${datos.ronda}`);
-  }
-
-  const avisoImpresion = fallaImpresion && (
-    <div className="space-y-2 rounded-xl border-2 border-paliacate bg-paliacate-claro px-3 py-3 text-sm text-paliacate-oscuro">
-      <p>
-        <strong>No se imprimió:</strong> {fallaImpresion.etiqueta}. {fallaImpresion.error}
-      </p>
-      <div className="flex gap-2">
-        <button onClick={reintentarImpresion} className="flex-1 rounded-lg bg-paliacate py-2.5 font-semibold text-white">
-          {fallaImpresion.sinConectar.length ? `Conectar ${LUGARES[fallaImpresion.sinConectar[0]].nombre} e imprimir` : "Reintentar impresión"}
-        </button>
-        <button onClick={() => setFallaImpresion(null)} className="rounded-lg border border-paliacate/40 px-3 font-semibold">
-          Omitir
-        </button>
-      </div>
-    </div>
-  );
 
   async function ejecutar(accion: () => PromiseLike<{ error: unknown }>) {
     setAviso("");
@@ -205,62 +116,21 @@ export default function VistaMesero({ perfil, cuentaInicial = null }: { perfil: 
     setBorrador({ tipo: "PARA_LLEVAR", nombre: nombre.trim() });
   }
 
-  // Cancelar un producto individual e imprimir ticket en cocina
-  async function cancelarItemIndividual(d: DetallePedido, p: Pedido) {
+  // Cancelar un producto: la estación de cocina imprime el aviso sola
+  async function cancelarItemIndividual(d: DetallePedido) {
     const motivo = window.prompt("Motivo de la cancelación para cocina:");
     if (!motivo || !motivo.trim()) return;
-
-    const exito = await ejecutar(() =>
-      supabase
-        .from("detalle_pedido")
-        .update({ estado: "CANCELADO", motivo_cancelacion: motivo.trim() })
-        .eq("id", d.id)
+    await ejecutar(() =>
+      supabase.from("detalle_pedido").update({ estado: "CANCELADO", motivo_cancelacion: motivo.trim() }).eq("id", d.id)
     );
-
-    if (exito && cuenta) {
-      await imprimirCancelacion({
-        cuentaNombre: nombreCuenta(cuenta),
-        ronda: p.numero_ronda,
-        items: [
-          {
-            nombre: `${d.nombre_producto}${d.nombre_opcion ? ` (${d.nombre_opcion})` : ""}`,
-            cantidad: cantidadTexto(d),
-            notas: d.notas ?? undefined,
-          },
-        ],
-        motivo: motivo.trim(),
-        hora: horaActualMX(),
-      });
-    }
   }
 
-  // Cancelar toda una ronda e imprimir ticket en cocina
+  // Cancelar toda una ronda (también avisa a cocina sola)
   async function cancelarRondaCompleta(p: Pedido) {
     if (!window.confirm("¿Seguro que deseas cancelar toda esta ronda en cocina?")) return;
     const motivo = window.prompt("Motivo de la cancelación de la ronda:");
     if (!motivo || !motivo.trim()) return;
-
-    const exito = await ejecutar(() =>
-      supabase.from("pedidos").update({ estado: "CANCELADO" }).eq("id", p.id)
-    );
-
-    if (exito && cuenta) {
-      const itemsActivos = (p.detalle_pedido || [])
-        .filter((d) => d.estado !== "CANCELADO")
-        .map((d) => ({
-          nombre: `${d.nombre_producto}${d.nombre_opcion ? ` (${d.nombre_opcion})` : ""}`,
-          cantidad: cantidadTexto(d),
-          notas: d.notas ?? undefined,
-        }));
-
-      await imprimirCancelacion({
-        cuentaNombre: nombreCuenta(cuenta),
-        ronda: p.numero_ronda,
-        items: itemsActivos.length > 0 ? itemsActivos : [{ nombre: "Ronda completa cancelada", cantidad: "Toda" }],
-        motivo: motivo.trim(),
-        hora: horaActualMX(),
-      });
-    }
+    await ejecutar(() => supabase.from("pedidos").update({ estado: "CANCELADO", motivo_cancelacion: motivo.trim() }).eq("id", p.id));
   }
 
   // Cocina ya no marca rondas como listas: la cuenta se puede pedir en cualquier momento
@@ -292,7 +162,6 @@ export default function VistaMesero({ perfil, cuentaInicial = null }: { perfil: 
           setBorrador(null);
           await cargar();
           setCuentaId(nuevaCuentaId);
-          if (pedidoId) imprimirRonda(pedidoId);
         }}
       />
     );
@@ -308,10 +177,9 @@ export default function VistaMesero({ perfil, cuentaInicial = null }: { perfil: 
         productos={productos}
         opciones={opciones}
         onCancelar={() => setCapturando(false)}
-        onEnviado={async (pedidoId) => {
+        onEnviado={async () => {
           setCapturando(false);
           await cargar();
-          if (pedidoId) imprimirRonda(pedidoId);
         }}
       />
     );
@@ -358,8 +226,7 @@ export default function VistaMesero({ perfil, cuentaInicial = null }: { perfil: 
         {aviso && (
           <p className="rounded-xl bg-paliacate-claro px-3 py-2.5 text-sm font-medium text-paliacate-oscuro">{aviso}</p>
         )}
-
-        {avisoImpresion}
+        {info && <p className="rounded-xl bg-hoja-claro px-3 py-2.5 text-sm font-medium text-hoja">{info}</p>}
 
         {rondas.length === 0 && (
           <p className="rounded-2xl border-2 border-dashed border-borde px-4 py-8 text-center text-cafe-medio">
@@ -377,9 +244,9 @@ export default function VistaMesero({ perfil, cuentaInicial = null }: { perfil: 
               <div className="mb-3 flex items-center justify-between">
                 <span className="flex items-center gap-2">
                   <strong className="font-display text-lg">Ronda {p.numero_ronda}</strong>
-                  {estadoNorm !== "CANCELADO" && (
+                  {estadoNorm !== "CANCELADO" && (p.comandas || []).some((c) => c.tipo === "PEDIDO") && (
                     <button
-                      onClick={() => imprimirRonda(p.id)}
+                      onClick={() => reimprimirRonda(p.id)}
                       className="rounded-lg border border-borde px-2 py-1 text-xs font-semibold text-cafe-medio hover:border-cafe-medio"
                     >
                       Reimprimir
@@ -388,12 +255,40 @@ export default function VistaMesero({ perfil, cuentaInicial = null }: { perfil: 
                 </span>
                 <span
                   className={`rounded-full px-3 py-1 text-xs font-bold ${
-                    estadoNorm === "CANCELADO" ? "bg-paliacate-claro text-paliacate-oscuro" : "bg-crema-oscuro text-cafe-medio"
+                    estadoNorm === "CANCELADO"
+                      ? "bg-paliacate-claro text-paliacate-oscuro"
+                      : estadoNorm === "LISTO"
+                      ? "bg-hoja text-white"
+                      : "bg-crema-oscuro text-cafe-medio"
                   }`}
                 >
-                  {estadoNorm === "CANCELADO" ? "Cancelada" : "Enviada"}
+                  {estadoNorm === "CANCELADO" ? "Cancelada" : estadoNorm === "LISTO" ? "¡Lista!" : estadoNorm === "ENTREGADO" ? "Entregada" : "En cocina"}
                 </span>
               </div>
+              {estadoNorm !== "CANCELADO" && estadoNorm !== "ENTREGADO" && (p.comandas || []).some((c) => c.tipo === "PEDIDO") && (
+                <div className="mb-3 flex flex-wrap gap-1.5 text-xs">
+                  {(p.comandas || [])
+                    .filter((c) => c.tipo === "PEDIDO")
+                    .map((c) => (
+                      <span
+                        key={c.id}
+                        className={`rounded-full px-2.5 py-1 font-semibold ${
+                          !c.impresa_en ? "bg-paliacate-claro text-paliacate-oscuro" : c.lista_en ? "bg-hoja-claro text-hoja" : "bg-crema-oscuro text-cafe-medio"
+                        }`}
+                      >
+                        {NOMBRE_ESTACION[c.estacion]}: {!c.impresa_en ? "sin imprimir" : c.lista_en ? "lista ✓" : "preparando"}
+                      </span>
+                    ))}
+                </div>
+              )}
+              {estadoNorm === "LISTO" && (
+                <button
+                  onClick={() => marcarEntregada(p.id)}
+                  className="mb-3 w-full rounded-xl bg-hoja py-3 font-bold text-white active:scale-[0.99]"
+                >
+                  Ya la llevé a la mesa
+                </button>
+              )}
               <ul className="space-y-2">
                 {(p.detalle_pedido || []).map((d) => {
                   const tachado = d.estado === "CANCELADO" || estadoNorm === "CANCELADO";
@@ -402,7 +297,15 @@ export default function VistaMesero({ perfil, cuentaInicial = null }: { perfil: 
                       <span className="min-w-0">
                         <span className="font-semibold">{cantidadTexto(d)}</span> {d.nombre_producto}
                         {d.nombre_opcion ? ` (${d.nombre_opcion})` : ""}
+                        {(d.plato ?? 1) > 1 || (p.detalle_pedido || []).some((x) => (x.plato ?? 1) > 1) ? (
+                          <span className="ml-1.5 rounded bg-crema-oscuro px-1.5 text-xs font-bold text-cafe-medio">Plato {d.plato ?? 1}</span>
+                        ) : null}
                         {d.con_quesillo && <span className="block text-xs font-semibold text-cafe">+ quesillo</span>}
+                        {(d.sin_cebolla || d.sin_cilantro) && (
+                          <span className="block text-xs font-semibold text-cafe">
+                            {[d.sin_cebolla && "sin cebolla", d.sin_cilantro && "sin cilantro"].filter(Boolean).join(" · ")}
+                          </span>
+                        )}
                         {d.notas ? <em className="block text-xs text-cafe-medio">{d.notas}</em> : null}
                       </span>
                       <span className="flex shrink-0 items-center gap-3">
@@ -412,7 +315,7 @@ export default function VistaMesero({ perfil, cuentaInicial = null }: { perfil: 
                           estadoNorm !== "ENTREGADO" && (
                             <button
                               className="rounded-lg px-2 py-1 text-xs font-semibold text-paliacate hover:bg-paliacate-claro"
-                              onClick={() => cancelarItemIndividual(d, p)}
+                              onClick={() => cancelarItemIndividual(d)}
                             >
                               Quitar
                             </button>
@@ -484,11 +387,6 @@ export default function VistaMesero({ perfil, cuentaInicial = null }: { perfil: 
         <p className="rounded-xl bg-paliacate-claro px-3 py-2.5 text-sm font-medium text-paliacate-oscuro">{aviso}</p>
       )}
 
-      {avisoImpresion}
-      <div className="space-y-2">
-        <BotonImpresora destino="cocina" />
-        <BotonImpresora destino="garnachas" />
-      </div>
 
       <div className="grid grid-cols-2 gap-1 rounded-2xl bg-crema-oscuro p-1">
         {(["MESAS", "LLEVAR"] as const).map((p) => (
@@ -515,7 +413,10 @@ export default function VistaMesero({ perfil, cuentaInicial = null }: { perfil: 
               {mesas.map((m) => {
                 const c = cuentas.find((x) => x.mesa_id === m.id);
                 const pidioCuenta = c?.estado === "CUENTA_SOLICITADA";
-                const estilo = pidioCuenta
+                const lista = (c?.pedidos || []).some((p) => p.estado === "LISTO");
+                const estilo = lista
+                  ? "border-hoja bg-hoja-claro text-cafe"
+                  : pidioCuenta
                   ? "border-paliacate bg-paliacate-claro text-cafe"
                   : c
                   ? "border-cafe bg-white text-cafe"
@@ -526,6 +427,11 @@ export default function VistaMesero({ perfil, cuentaInicial = null }: { perfil: 
                     onClick={() => abrirMesa(m)}
                     className={`relative flex aspect-square flex-col items-center justify-center rounded-2xl border-2 transition-transform active:scale-95 ${estilo}`}
                   >
+                    {lista && (
+                      <span className="absolute -top-2 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full bg-hoja px-2 py-0.5 text-[11px] font-extrabold text-white">
+                        ¡LISTA!
+                      </span>
+                    )}
                     <span className="font-display text-4xl font-extrabold leading-none">{m.numero}</span>
                     <span className="mt-1.5 text-xs font-semibold">
                       {c ? (pidioCuenta ? "Cuenta" : totalCuenta(c.pedidos) === 0 ? "En $0" : dinero(totalCuenta(c.pedidos))) : "Libre"}
@@ -539,6 +445,7 @@ export default function VistaMesero({ perfil, cuentaInicial = null }: { perfil: 
               <Leyenda color="bg-white border-2 border-borde" texto="Libre" />
               <Leyenda color="bg-white border-2 border-cafe" texto="Abierta" />
               <Leyenda color="bg-paliacate" texto="Pidió cuenta" />
+              <Leyenda color="bg-hoja" texto="Comida lista para llevar" />
             </div>
           </>
         )
@@ -562,7 +469,12 @@ export default function VistaMesero({ perfil, cuentaInicial = null }: { perfil: 
                   c.estado === "CUENTA_SOLICITADA" ? "border-paliacate bg-paliacate-claro" : "border-borde bg-white"
                 }`}
               >
-                <span className="font-display text-lg font-bold">{nombreCuenta(c)}</span>
+                <span className="font-display text-lg font-bold">
+                  {nombreCuenta(c)}
+                  {(c.pedidos || []).some((p) => p.estado === "LISTO") && (
+                    <span className="ml-2 rounded-full bg-hoja px-2 py-0.5 align-middle text-xs font-extrabold text-white">¡LISTA!</span>
+                  )}
+                </span>
                 <span className="font-semibold">{c.estado === "CUENTA_SOLICITADA" ? "Cuenta" : dinero(totalCuenta(c.pedidos))}</span>
               </button>
             );
@@ -607,6 +519,9 @@ function Captura({
   const [lineas, setLineas] = useState<Linea[]>([]);
   const [eligiendo, setEligiendo] = useState<Producto | null>(null);
   const [enviando, setEnviando] = useState(false);
+  // Plato al que se agrega lo que se toque (para que cocina sepa qué va en cada plato)
+  const [plato, setPlato] = useState(1);
+  const [numPlatos, setNumPlatos] = useState(1);
   const [error, setError] = useState("");
 
   // El quesillo se pregunta en cada platillo: no se muestra como producto suelto
@@ -622,22 +537,44 @@ function Captura({
     return () => window.removeEventListener("beforeunload", aviso);
   }, [lineas.length]);
 
-  function agregar(l: Omit<Linea, "clave" | "notas">) {
+  // Mismo producto, opción, extras y plato (sin nota) = se suma a la misma línea
+  const mismaLinea = (a: Omit<Linea, "clave" | "notas">, b: Linea) =>
+    b.producto.id === a.producto.id &&
+    b.opcion?.id === a.opcion?.id &&
+    b.quesillo === a.quesillo &&
+    b.sinCebolla === a.sinCebolla &&
+    b.sinCilantro === a.sinCilantro &&
+    b.plato === a.plato &&
+    !b.notas;
+
+  function agregar(l: { producto: Producto; opcion: Opcion | null; cantidad?: number; monto?: number }) {
+    const nueva = { ...l, quesillo: false, sinCebolla: false, sinCilantro: false, plato };
     setLineas((prev) => {
       if (l.producto.unidad === "PIEZA") {
-        const i = prev.findIndex(
-          (x) => x.producto.id === l.producto.id && x.opcion?.id === l.opcion?.id && x.quesillo === l.quesillo && !x.notas
-        );
+        const i = prev.findIndex((x) => mismaLinea(nueva, x));
         if (i >= 0) return prev.map((x, j) => (j === i ? { ...x, cantidad: (x.cantidad ?? 0) + 1 } : x));
       }
-      return [...prev, { ...l, notas: "", clave: generarUUID() }];
+      return [...prev, { ...nueva, notas: "", clave: generarUUID() }];
     });
+  }
+
+  function cambiarLinea(clave: string, cambios: Partial<Linea>) {
+    setLineas((prev) => prev.map((x) => (x.clave === clave ? { ...x, ...cambios } : x)));
+  }
+
+  // Separa una pieza en su propia línea (para ponerle otros extras u otro plato)
+  function separarUna(l: Linea) {
+    setLineas((prev) =>
+      prev.flatMap((x) =>
+        x.clave !== l.clave ? [x] : [{ ...x, cantidad: (x.cantidad ?? 1) - 1 }, { ...x, cantidad: 1, notas: "", clave: generarUUID() }]
+      )
+    );
   }
 
   function tocarProducto(p: Producto) {
     if (!p.disponible) return;
-    if (p.requiere_opcion || p.unidad === "KG" || p.pregunta_quesillo) return setEligiendo(p);
-    agregar({ producto: p, opcion: null, cantidad: 1, quesillo: false });
+    if (p.requiere_opcion || p.unidad === "KG") return setEligiendo(p);
+    agregar({ producto: p, opcion: null, cantidad: 1 });
   }
 
   // Precio del quesillo: el del producto "Quesillo extra" (editable en Admin)
@@ -659,6 +596,9 @@ function Captura({
       opcion_id: l.opcion?.id ?? null,
       ...(l.monto !== undefined ? { monto: l.monto } : { cantidad: l.cantidad }),
       quesillo: l.quesillo,
+      sin_cebolla: l.sinCebolla,
+      sin_cilantro: l.sinCilantro,
+      plato: l.plato,
       notas: l.notas || null,
     }));
     let pedidoId: string | null = null;
@@ -718,6 +658,28 @@ function Captura({
         ))}
       </div>
 
+      <div className="mb-3 flex items-center gap-2 overflow-x-auto rounded-2xl border border-borde bg-white px-3 py-2">
+        <span className="shrink-0 text-sm font-semibold text-cafe-medio">Agregar al:</span>
+        {Array.from({ length: numPlatos }, (_, i) => i + 1).map((n) => (
+          <button
+            key={n}
+            onClick={() => setPlato(n)}
+            className={`shrink-0 rounded-full px-3.5 py-2 text-sm font-bold ${plato === n ? "bg-paliacate text-white" : "border border-borde bg-crema/50"}`}
+          >
+            Plato {n}
+          </button>
+        ))}
+        <button
+          onClick={() => {
+            setNumPlatos(numPlatos + 1);
+            setPlato(numPlatos + 1);
+          }}
+          className="shrink-0 rounded-full border-2 border-dashed border-cafe-medio px-3 py-1.5 text-sm font-semibold"
+        >
+          + Plato
+        </button>
+      </div>
+
       <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3">
         {productosVisibles
           .filter((p) => p.categoria_id === categoriaActiva)
@@ -754,81 +716,115 @@ function Captura({
             Toca un producto para agregarlo.
           </p>
         )}
-        {lineas.map((l) => (
-          <div key={l.clave} className="rounded-2xl border border-borde bg-white p-3">
-            <div className="flex items-center justify-between gap-2">
-              <span className="min-w-0">
-                <span className="font-semibold">
-                  {l.producto.nombre}
-                  {l.opcion ? ` (${l.opcion.nombre})` : ""}
-                </span>
-                {l.quesillo && (
-                  <span className="ml-1.5 rounded-full bg-queso px-2 py-0.5 text-xs font-bold text-cafe">+ quesillo</span>
-                )}
-                <span className="block text-xs text-cafe-medio">
-                  {l.producto.unidad === "KG"
-                    ? l.monto !== undefined
-                      ? `${dinero(l.monto)} de producto (≈ ${(l.monto / Number(l.producto.precio)).toFixed(3)} kg)`
-                      : `${(l.cantidad ?? 0).toFixed(3)} kg`
-                    : `${l.cantidad} pz`}
-                </span>
-              </span>
-              <span className="flex shrink-0 items-center gap-1.5">
-                {l.producto.unidad === "PIEZA" && (
-                  <>
-                    <button
-                      aria-label="Quitar uno"
-                      className="h-10 w-10 rounded-xl border border-borde text-xl font-semibold"
-                      onClick={() =>
-                        setLineas((prev) =>
-                          prev.flatMap((x) =>
-                            x.clave !== l.clave
-                              ? [x]
-                              : (x.cantidad ?? 1) > 1
-                              ? [{ ...x, cantidad: (x.cantidad ?? 1) - 1 }]
-                              : []
-                          )
-                        )
-                      }
-                    >
-                      −
-                    </button>
-                    <button
-                      aria-label="Agregar uno"
-                      className="h-10 w-10 rounded-xl border border-borde text-xl font-semibold"
-                      onClick={() =>
-                        setLineas((prev) =>
-                          prev.map((x) => (x.clave === l.clave ? { ...x, cantidad: (x.cantidad ?? 0) + 1 } : x))
-                        )
-                      }
-                    >
-                      +
-                    </button>
-                  </>
-                )}
-                {l.producto.unidad === "KG" && (
-                  <button
-                    className="h-10 rounded-xl border border-borde px-3 text-sm font-semibold"
-                    onClick={() => setLineas((prev) => prev.filter((x) => x.clave !== l.clave))}
-                  >
-                    Quitar
-                  </button>
-                )}
-                <span className="w-20 text-right font-semibold tabular-nums">{dinero(importeLinea(l))}</span>
-              </span>
+        {Array.from(new Set(lineas.map((l) => l.plato)))
+          .sort((a, b) => a - b)
+          .map((n) => (
+            <div key={n} className="space-y-2">
+              {numPlatos > 1 && <p className="pt-1 text-xs font-extrabold uppercase tracking-wider text-cafe-medio">Plato {n}</p>}
+              {lineas
+                .filter((l) => l.plato === n)
+                .map((l) => (
+                  <div key={l.clave} className="rounded-2xl border border-borde bg-white p-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="min-w-0">
+                        <span className="font-semibold">
+                          {l.producto.nombre}
+                          {l.opcion ? ` (${l.opcion.nombre})` : ""}
+                        </span>
+                        <span className="block text-xs text-cafe-medio">
+                          {l.producto.unidad === "KG"
+                            ? l.monto !== undefined
+                              ? `${dinero(l.monto)} de producto (≈ ${(l.monto / Number(l.producto.precio)).toFixed(3)} kg)`
+                              : `${(l.cantidad ?? 0).toFixed(3)} kg`
+                            : `${l.cantidad} pz`}
+                        </span>
+                      </span>
+                      <span className="flex shrink-0 items-center gap-1.5">
+                        {l.producto.unidad === "PIEZA" && (
+                          <>
+                            <button
+                              aria-label="Quitar uno"
+                              className="h-10 w-10 rounded-xl border border-borde text-xl font-semibold"
+                              onClick={() =>
+                                setLineas((prev) =>
+                                  prev.flatMap((x) =>
+                                    x.clave !== l.clave ? [x] : (x.cantidad ?? 1) > 1 ? [{ ...x, cantidad: (x.cantidad ?? 1) - 1 }] : []
+                                  )
+                                )
+                              }
+                            >
+                              −
+                            </button>
+                            <button
+                              aria-label="Agregar uno"
+                              className="h-10 w-10 rounded-xl border border-borde text-xl font-semibold"
+                              onClick={() => cambiarLinea(l.clave, { cantidad: (l.cantidad ?? 0) + 1 })}
+                            >
+                              +
+                            </button>
+                          </>
+                        )}
+                        {l.producto.unidad === "KG" && (
+                          <button
+                            className="h-10 rounded-xl border border-borde px-3 text-sm font-semibold"
+                            onClick={() => setLineas((prev) => prev.filter((x) => x.clave !== l.clave))}
+                          >
+                            Quitar
+                          </button>
+                        )}
+                        <span className="w-20 text-right font-semibold tabular-nums">{dinero(importeLinea(l))}</span>
+                      </span>
+                    </div>
+
+                    {/* Extras opcionales: solo se tocan si el cliente los pide */}
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      {l.producto.lleva_verdura !== false && (
+                        <>
+                          <Extra activo={l.sinCebolla} onClick={() => cambiarLinea(l.clave, { sinCebolla: !l.sinCebolla })}>
+                            Sin cebolla
+                          </Extra>
+                          <Extra activo={l.sinCilantro} onClick={() => cambiarLinea(l.clave, { sinCilantro: !l.sinCilantro })}>
+                            Sin cilantro
+                          </Extra>
+                        </>
+                      )}
+                      {l.producto.pregunta_quesillo && l.producto.unidad === "PIEZA" && (
+                        <Extra activo={l.quesillo} onClick={() => cambiarLinea(l.clave, { quesillo: !l.quesillo })}>
+                          + Quesillo {dinero(precioQuesillo)}
+                        </Extra>
+                      )}
+                      {numPlatos > 1 && (
+                        <select
+                          value={l.plato}
+                          onChange={(e) => cambiarLinea(l.clave, { plato: Number(e.target.value) })}
+                          className="rounded-full border border-borde bg-white px-2.5 py-1.5 text-xs font-semibold"
+                        >
+                          {Array.from({ length: numPlatos }, (_, i) => i + 1).map((k) => (
+                            <option key={k} value={k}>
+                              Plato {k}
+                            </option>
+                          ))}
+                        </select>
+                      )}
+                      {l.producto.unidad === "PIEZA" && (l.cantidad ?? 1) > 1 && (
+                        <button onClick={() => separarUna(l)} className="rounded-full px-2.5 py-1.5 text-xs font-semibold text-cafe-medio underline">
+                          Separar 1
+                        </button>
+                      )}
+                    </div>
+                    {l.producto.unidad === "PIEZA" && (l.cantidad ?? 1) > 1 && (l.quesillo || l.sinCebolla || l.sinCilantro) && (
+                      <p className="mt-1 text-xs text-cafe-medio">Los extras aplican a las {l.cantidad} piezas. Si solo es una, toca Separar 1.</p>
+                    )}
+                    <input
+                      placeholder="Nota (ej. bien dorado)"
+                      value={l.notas}
+                      onChange={(e) => cambiarLinea(l.clave, { notas: e.target.value })}
+                      className="mt-2 w-full rounded-xl border border-borde bg-crema/40 px-3 py-2 text-sm focus:border-cafe focus:outline-none"
+                    />
+                  </div>
+                ))}
             </div>
-            <input
-              placeholder="Nota (ej. sin cebolla)"
-              value={l.notas}
-              onChange={(e) =>
-                setLineas((prev) =>
-                  prev.map((x) => (x.clave === l.clave ? { ...x, notas: e.target.value } : x))
-                )
-              }
-              className="mt-2 w-full rounded-xl border border-borde bg-crema/40 px-3 py-2 text-sm focus:border-cafe focus:outline-none"
-            />
-          </div>
-        ))}
+          ))}
       </section>
 
       {error && (
@@ -847,11 +843,10 @@ function Captura({
       {eligiendo && (
         <Selector
           producto={eligiendo}
-          precioQuesillo={precioQuesillo}
           opciones={opciones.filter((o) => o.producto_id === eligiendo.id)}
           onCerrar={() => setEligiendo(null)}
           onElegir={(l) => {
-            agregar({ producto: eligiendo, quesillo: false, ...l });
+            agregar({ producto: eligiendo, ...l });
             setEligiendo(null);
           }}
         />
@@ -863,28 +858,22 @@ function Captura({
 // Ventana para elegir guisado, peso/monto y quesillo.
 // • Opciones "A con B" (ej. "Campechano con Maciza") se agrupan en un submenú "A".
 // • Opciones "A y B" (ej. "Maciza y Cuerito") se eligen tocando 2 ingredientes.
-// • Si el platillo pregunta quesillo, al final se elige Sí / No (obligatorio).
+// • El quesillo, la cebolla y el cilantro ya no se preguntan: son extras en la línea.
 function Selector({
   producto,
   opciones,
-  precioQuesillo,
   onCerrar,
   onElegir,
 }: {
   producto: Producto;
   opciones: Opcion[];
-  precioQuesillo: number;
   onCerrar: () => void;
-  onElegir: (l: { opcion: Opcion | null; cantidad?: number; monto?: number; quesillo?: boolean }) => void;
+  onElegir: (l: { opcion: Opcion | null; cantidad?: number; monto?: number }) => void;
 }) {
   const [peso, setPeso] = useState("");
   const [monto, setMonto] = useState("");
   const [grupoAbierto, setGrupoAbierto] = useState<string | null>(null);
   const [pareja, setPareja] = useState<string[]>([]);
-  // Opción ya elegida, esperando la respuesta de quesillo
-  const [pendiente, setPendiente] = useState<{ opcion: Opcion | null } | null>(
-    !producto.requiere_opcion && producto.unidad === "PIEZA" ? { opcion: null } : null
-  );
   const precio = Number(producto.precio);
 
   // ¿Es un platillo de "elige 2"? (todas sus opciones son "A y B")
@@ -917,10 +906,8 @@ function Selector({
     return { sueltas: opciones.filter((o) => !enGrupo.has(o.id)), grupos };
   }, [opciones]);
 
-  // Al elegir la opción: si pregunta quesillo, pasa al paso de quesillo; si no, agrega
   function elegirOpcion(opcion: Opcion | null) {
-    if (producto.pregunta_quesillo) setPendiente({ opcion });
-    else onElegir({ opcion, cantidad: 1 });
+    onElegir({ opcion, cantidad: 1 });
   }
 
   function tocarIngrediente(ing: string) {
@@ -934,9 +921,7 @@ function Selector({
   }
 
   const botonOpcion = "rounded-2xl border-2 border-borde bg-white py-5 text-lg font-semibold active:scale-[0.97]";
-  const titulo = pendiente?.opcion
-    ? `${producto.nombre} (${pendiente.opcion.nombre})`
-    : grupoAbierto
+  const titulo = grupoAbierto
     ? `${producto.nombre} ${grupoAbierto.toLowerCase()}`
     : producto.nombre;
 
@@ -953,43 +938,10 @@ function Selector({
             {producto.unidad === "KG" ? " / kg" : ""}
           </span>
         </div>
-        {producto.descripcion && !pendiente && <p className="-mt-2 text-sm text-cafe-medio">{producto.descripcion}</p>}
-
-        {/* Paso final: quesillo */}
-        {pendiente && (
-          <>
-            <p className="text-base font-semibold">¿Con quesillo?</p>
-            <div className="grid grid-cols-2 gap-2.5">
-              <button
-                className="rounded-2xl border-2 border-queso bg-queso-claro py-6 text-lg font-bold active:scale-[0.97]"
-                onClick={() => onElegir({ opcion: pendiente.opcion, cantidad: 1, quesillo: true })}
-              >
-                Sí
-                <span className="block text-sm font-semibold text-cafe-medio">+{dinero(precioQuesillo)}</span>
-              </button>
-              <button
-                className="rounded-2xl border-2 border-borde bg-white py-6 text-lg font-bold active:scale-[0.97]"
-                onClick={() => onElegir({ opcion: pendiente.opcion, cantidad: 1, quesillo: false })}
-              >
-                No
-              </button>
-            </div>
-            {producto.requiere_opcion && (
-              <button
-                className="w-full rounded-xl border-2 border-cafe bg-white py-3 font-semibold active:bg-crema-oscuro"
-                onClick={() => {
-                  setPendiente(null);
-                  setPareja([]);
-                }}
-              >
-                ‹ Regresar
-              </button>
-            )}
-          </>
-        )}
+        {producto.descripcion && <p className="-mt-2 text-sm text-cafe-medio">{producto.descripcion}</p>}
 
         {/* Elige 2 ingredientes */}
-        {!pendiente && producto.requiere_opcion && combinado && (
+        {producto.requiere_opcion && combinado && (
           <>
             <p className="text-sm font-semibold">Elige 2 ingredientes ({pareja.length}/2)</p>
             <div className="grid grid-cols-2 gap-2.5">
@@ -1009,7 +961,7 @@ function Selector({
         )}
 
         {/* Submenú "A con B" */}
-        {!pendiente && producto.requiere_opcion && !combinado && grupoAbierto && (
+        {producto.requiere_opcion && !combinado && grupoAbierto && (
           <>
             <p className="text-sm text-cafe-medio">¿Con qué lo quiere?</p>
             <div className="grid grid-cols-2 gap-2.5">
@@ -1029,7 +981,7 @@ function Selector({
         )}
 
         {/* Opciones normales */}
-        {!pendiente && producto.requiere_opcion && !combinado && !grupoAbierto && (
+        {producto.requiere_opcion && !combinado && !grupoAbierto && (
           <div className="grid grid-cols-2 gap-2.5">
             {sueltas.map((o) => (
               <button key={o.id} className={botonOpcion} onClick={() => elegirOpcion(o)}>
@@ -1110,5 +1062,19 @@ function Selector({
         </button>
       </div>
     </div>
+  );
+}
+
+function Extra({ activo, onClick, children }: { activo: boolean; onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button
+      onClick={onClick}
+      className={`rounded-full px-3 py-1.5 text-xs font-bold transition-colors ${
+        activo ? "bg-cafe text-crema" : "border border-borde bg-white text-cafe-medio"
+      }`}
+    >
+      {activo ? "✓ " : ""}
+      {children}
+    </button>
   );
 }

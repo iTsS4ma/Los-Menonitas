@@ -22,6 +22,8 @@ export type EstadoImpresoras = {
   soportado: boolean;
   impresoras: ImpresoraGuardada[];
   imprimiendo: boolean;
+  /** Hay conexión Bluetooth abierta en este momento (no solo permiso) */
+  enLinea: boolean;
 };
 
 // Servicios que usan las impresoras térmicas Bluetooth más comunes
@@ -79,10 +81,13 @@ try {
 } catch {}
 
 export function estadoImpresoras(d: Destino): EstadoImpresoras {
+  const lista = guardadas(d);
+  const dev = lista[0] ? dispositivos[d].get(lista[0].id) : undefined;
   return {
     soportado: !!bt(),
-    impresoras: guardadas(d).map((g) => ({ ...g, lista: dispositivos[d].has(g.id) })),
+    impresoras: lista.map((g) => ({ ...g, lista: dispositivos[d].has(g.id) })),
     imprimiendo: imprimiendo[d],
+    enLinea: !!dev && conexiones.has(dev.id) && !!dev.gatt?.connected,
   };
 }
 
@@ -161,8 +166,8 @@ async function caracteristicaEscritura(servidor: any) {
 
 // Cuánto tiempo sin imprimir antes de soltar la impresora
 const ESPERA_SOLTAR: Record<Destino, number> = {
-  cocina: 4000, // corto: otros meseros usan las mismas impresoras
-  garnachas: 4000,
+  cocina: Infinity, // solo la estación de cocina las usa: la conexión se queda abierta
+  garnachas: Infinity,
   caja: 20000, // la impresora de caja es solo de la computadora de caja
 };
 const PAUSA_TRAS_SOLTAR = 1500;
@@ -172,6 +177,13 @@ const conexiones = new Map<string, Conexion>();
 const soltadaEn = new Map<string, number>();
 const dormir = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+// Avisa a la pantalla del lugar al que pertenece este dispositivo
+function avisarDe(dev: any) {
+  (Object.keys(dispositivos) as Destino[]).forEach((d) => {
+    if (dispositivos[d].get(dev.id) === dev) avisar(d);
+  });
+}
+
 function soltar(dev: any) {
   const c = conexiones.get(dev.id);
   if (c?.temporizador) clearTimeout(c.temporizador);
@@ -180,6 +192,7 @@ function soltar(dev: any) {
     if (dev.gatt?.connected) dev.gatt.disconnect();
   } catch {}
   soltadaEn.set(dev.id, Date.now());
+  avisarDe(dev);
 }
 
 async function conectar(dev: any): Promise<Conexion> {
@@ -191,6 +204,7 @@ async function conectar(dev: any): Promise<Conexion> {
     dev.addEventListener?.("gattserverdisconnected", () => {
       conexiones.delete(dev.id);
       soltadaEn.set(dev.id, Date.now());
+      avisarDe(dev);
     });
     dev.__escuchaDesconexion = true;
   }
@@ -206,6 +220,7 @@ async function conectar(dev: any): Promise<Conexion> {
       const caract = await caracteristicaEscritura(servidor);
       const c: Conexion = { servidor, caract };
       conexiones.set(dev.id, c);
+      avisarDe(dev);
       return c;
     } catch (e) {
       ultimoError = e;
@@ -257,7 +272,49 @@ async function enviarA(dev: any, bytes: Uint8Array, d: Destino) {
   // Esperar a que termine de imprimir antes del siguiente ticket
   await dormir(tiempoImpresion(bytes));
   if (c.temporizador) clearTimeout(c.temporizador);
-  c.temporizador = setTimeout(() => soltar(dev), ESPERA_SOLTAR[d]);
+  if (Number.isFinite(ESPERA_SOLTAR[d])) c.temporizador = setTimeout(() => soltar(dev), ESPERA_SOLTAR[d]);
+}
+
+/**
+ * Mantiene viva la conexión de un lugar: cada pocos segundos revisa que siga
+ * conectada; si se cayó, reconecta sola, y si está conectada le manda una señal
+ * mínima para que la impresora no se duerma. Devuelve la función para detenerla.
+ */
+export function vigilarImpresora(d: Destino, cadaMs = 8000) {
+  let activo = true;
+  let corriendo = false;
+  const revisar = async () => {
+    if (!activo || corriendo || imprimiendo[d]) return;
+    const g = guardadas(d)[0];
+    if (!g) return;
+    corriendo = true;
+    try {
+      if (!dispositivos[d].has(g.id)) await recuperarImpresoras(d);
+      const dev = dispositivos[d].get(g.id);
+      if (!dev) return;
+      const viva = conexiones.get(dev.id);
+      await (cola = cola.then(async () => {
+        if (viva && dev.gatt?.connected) {
+          // Señal mínima (inicializar impresora): no imprime nada
+          await escribir(viva.caract, new Uint8Array([0x1b, 0x40]));
+        } else {
+          await conectar(dev);
+        }
+      }).catch(() => {
+        const c = conexiones.get(dev.id);
+        if (c) soltar(dev);
+      }));
+    } finally {
+      corriendo = false;
+      avisar(d);
+    }
+  };
+  const t = setInterval(revisar, cadaMs);
+  revisar();
+  return () => {
+    activo = false;
+    clearInterval(t);
+  };
 }
 
 /** Error con el detalle de qué impresoras fallaron (para reintentar solo esas). */
@@ -387,7 +444,50 @@ class Ticket {
   bytes() { return new Uint8Array(this.b); }
 }
 
-export type RenglonTicket = { texto: string; detalle?: string | null; quesillo?: boolean; nota?: string | null };
+export type RenglonTicket = {
+  texto: string;
+  detalle?: string | null;
+  quesillo?: boolean;
+  nota?: string | null;
+  /** Extras en mayúsculas: "SIN CEBOLLA", "SIN CILANTRO" */
+  extras?: string[];
+};
+
+/** Comanda de una estación (Cocina o Garnachas), agrupada por plato. */
+export function ticketComandaEstacion(d: {
+  estacion: string;
+  cuenta: string;
+  ronda: number;
+  hora: string;
+  mesero?: string;
+  rapida?: boolean;
+  reimpresion?: boolean;
+  platos: { plato: number; renglones: RenglonTicket[] }[];
+}) {
+  const t = new Ticket().centro().negrita(true).texto(`*** ${d.estacion.toUpperCase()} ***`).grande();
+  partir(d.cuenta, 16).forEach((l) => t.texto(l));
+  t.normal().texto(`Ronda ${d.ronda}  -  ${d.hora}`).negrita(false);
+  if (d.mesero) t.texto(`Mesero: ${d.mesero}`);
+  if (d.rapida) t.grande().negrita(true).texto("RAPIDA").normal().negrita(false);
+  if (d.reimpresion) t.texto("(reimpresion)");
+  t.izquierda();
+  const variosPlatos = d.platos.length > 1 || (d.platos[0]?.plato ?? 1) > 1;
+  d.platos.forEach((p) => {
+    if (variosPlatos) t.linea("=").negrita(true).texto(`PLATO ${p.plato}`).negrita(false);
+    else t.linea();
+    p.renglones.forEach((r) => {
+      t.negrita(true);
+      partir(r.texto, ANCHO, "   ").forEach((l) => t.texto(l));
+      t.negrita(false);
+      if (r.detalle) partir(`(${r.detalle})`, ANCHO - 3, " ").forEach((l) => t.texto(`   ${l}`));
+      if (r.quesillo) t.negrita(true).texto("   + CON QUESILLO").negrita(false);
+      (r.extras ?? []).forEach((x) => t.negrita(true).texto(`   - ${x}`).negrita(false));
+      if (r.nota) partir(`* ${r.nota}`, ANCHO - 3, "     ").forEach((l) => t.texto(`   ${l}`));
+    });
+  });
+  t.linea().centro().texto("FIN COMANDA").avanzar(4).cortar();
+  return t.bytes();
+}
 
 export function ticketComanda(d: { cuenta: string; ronda: number; hora: string; mesero?: string; renglones: RenglonTicket[] }) {
   const t = new Ticket().centro().grande().negrita(true);
@@ -407,8 +507,10 @@ export function ticketComanda(d: { cuenta: string; ronda: number; hora: string; 
   return t.bytes();
 }
 
-export function ticketCancelacion(d: { cuenta: string; ronda: number; hora: string; motivo: string; renglones: RenglonTicket[] }) {
-  const t = new Ticket().centro().grande().negrita(true).texto("CANCELACION").normal();
+export function ticketCancelacion(d: { cuenta: string; ronda: number; hora: string; motivo: string; renglones: RenglonTicket[]; estacion?: string }) {
+  const t = new Ticket().centro();
+  if (d.estacion) t.negrita(true).texto(`*** ${d.estacion.toUpperCase()} ***`);
+  t.grande().negrita(true).texto("CANCELACION").normal();
   t.texto(`${d.cuenta} - Ronda ${d.ronda}`).negrita(false).texto(d.hora).izquierda().linea("=");
   t.negrita(true).texto("NO PREPARAR:");
   d.renglones.forEach((r) => partir(`X ${r.texto}`, ANCHO, "  ").forEach((l) => t.texto(l)));

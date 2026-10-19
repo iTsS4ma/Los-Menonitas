@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { crearClienteNavegador } from "@/lib/supabase/client";
 import { dinero, errorTexto } from "@/lib/formato";
-import type { Categoria, Opcion, Producto, Unidad } from "@/lib/tipos";
+import type { Categoria, Estacion, Opcion, Producto, Unidad } from "@/lib/tipos";
 
 export default function MenuPage() {
   const supabase = useMemo(() => crearClienteNavegador(), []);
@@ -46,7 +46,7 @@ export default function MenuPage() {
   function nuevoProducto(categoria_id: string) {
     setEditando({
       id: "", categoria_id, nombre: "", precio: 0, unidad: "PIEZA", requiere_opcion: false,
-      descripcion: "", pregunta_quesillo: false,
+      descripcion: "", pregunta_quesillo: false, estaciones: [], lleva_verdura: true, sopes_por_medio_kilo: false,
       disponible: true, activo: true, orden: productos.filter((p) => p.categoria_id === categoria_id).length + 1,
     });
   }
@@ -56,6 +56,8 @@ export default function MenuPage() {
       categoria_id: p.categoria_id, nombre: p.nombre.trim(), precio: Number(p.precio), unidad: p.unidad,
       requiere_opcion: p.requiere_opcion, disponible: p.disponible, activo: p.activo, orden: p.orden,
       descripcion: p.descripcion?.trim() || null, pregunta_quesillo: !!p.pregunta_quesillo,
+      estaciones: p.estaciones ?? [], lleva_verdura: p.lleva_verdura !== false, sopes_por_medio_kilo: !!p.sopes_por_medio_kilo,
+      estaciones_configuradas: true,
     };
     const ok = await ejecutar(
       p.id ? supabase.from("productos").update(datos).eq("id", p.id) : supabase.from("productos").insert(datos)
@@ -112,8 +114,13 @@ export default function MenuPage() {
                         <span className="rounded-full bg-paliacate-claro px-2 py-0.5 text-xs font-semibold text-paliacate-oscuro">Agotado</span>
                       )}
                       {!p.activo && <span className="text-xs no-underline">(oculto)</span>}
-                      {p.pregunta_quesillo && (
-                        <span className="rounded-full bg-queso-claro px-2 py-0.5 text-xs font-semibold">pregunta quesillo</span>
+                      {(p.estaciones ?? []).map((e) => (
+                        <span key={e} className="rounded-full bg-crema-oscuro px-2 py-0.5 text-xs font-semibold">
+                          {e === "COCINA" ? "Cocina" : "Garnachas"}
+                        </span>
+                      ))}
+                      {(p.estaciones ?? []).length === 0 && (
+                        <span className="rounded-full border border-borde px-2 py-0.5 text-xs text-cafe-medio">no va a cocina</span>
                       )}
                     </span>
                     <span className="flex gap-2">
@@ -185,7 +192,7 @@ function Formulario({ producto, categorias, onCerrar, onGuardar }: {
   const campo = "mt-1 block w-full rounded-xl border border-borde bg-white px-3 py-2.5 font-normal focus:border-cafe focus:outline-none";
   return (
     <div className="fixed inset-0 z-10 flex items-center justify-center bg-cafe/50 p-3" onClick={onCerrar}>
-      <div className="w-full max-w-md space-y-4 rounded-3xl bg-crema p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
+      <div className="max-h-[92vh] w-full max-w-md space-y-4 overflow-y-auto rounded-3xl bg-crema p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
         <h3 className="font-display text-2xl font-extrabold">{p.id ? "Editar producto" : "Nuevo producto"}</h3>
         <label className="block text-sm font-semibold">Nombre<input value={p.nombre} onChange={(e) => cambiar("nombre", e.target.value)} className={campo} /></label>
         <label className="block text-sm font-semibold">Categoría
@@ -202,7 +209,28 @@ function Formulario({ producto, categorias, onCerrar, onGuardar }: {
           </label>
         </div>
         <label className="block text-sm font-semibold">Descripción (la ven mesero y cocina)<input value={p.descripcion ?? ""} onChange={(e) => cambiar("descripcion", e.target.value)} placeholder="Ej. Queso con maciza" className={campo} /></label>
-        <label className="flex items-center gap-2 text-sm"><input type="checkbox" className="h-4 w-4 accent-paliacate" checked={!!p.pregunta_quesillo} onChange={(e) => cambiar("pregunta_quesillo", e.target.checked)} />Preguntar si lleva quesillo (+$10)</label>
+        <fieldset className="space-y-1.5 rounded-xl border border-borde bg-white px-3 py-2.5">
+          <legend className="px-1 text-sm font-semibold">¿Quién lo prepara?</legend>
+          {(["COCINA", "GARNACHAS"] as Estacion[]).map((e) => (
+            <label key={e} className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                className="h-4 w-4 accent-paliacate"
+                checked={(p.estaciones ?? []).includes(e)}
+                onChange={(ev) =>
+                  cambiar("estaciones", ev.target.checked ? [...(p.estaciones ?? []), e] : (p.estaciones ?? []).filter((x) => x !== e))
+                }
+              />
+              {e === "COCINA" ? "Cocina (tacos, carne)" : "Garnachas"}
+            </label>
+          ))}
+          <p className="text-xs text-cafe-medio">Si marcas las dos, la comanda sale en ambas (ej. especiales: garnachas hace la base y cocina pone la carne). Sin ninguna, no se imprime (bebidas).</p>
+        </fieldset>
+        <label className="flex items-center gap-2 text-sm"><input type="checkbox" className="h-4 w-4 accent-paliacate" checked={p.lleva_verdura !== false} onChange={(e) => cambiar("lleva_verdura", e.target.checked)} />Lleva cebolla y cilantro (el mesero puede marcar &quot;sin&quot;)</label>
+        <label className="flex items-center gap-2 text-sm"><input type="checkbox" className="h-4 w-4 accent-paliacate" checked={!!p.pregunta_quesillo} onChange={(e) => cambiar("pregunta_quesillo", e.target.checked)} />Puede llevar quesillo extra (+$10)</label>
+        {p.unidad === "KG" && (
+          <label className="flex items-center gap-2 text-sm"><input type="checkbox" className="h-4 w-4 accent-paliacate" checked={!!p.sopes_por_medio_kilo} onChange={(e) => cambiar("sopes_por_medio_kilo", e.target.checked)} />Incluye 2 sopes por cada medio kilo (se piden a Garnachas)</label>
+        )}
         <label className="flex items-center gap-2 text-sm"><input type="checkbox" className="h-4 w-4 accent-paliacate" checked={p.requiere_opcion} onChange={(e) => cambiar("requiere_opcion", e.target.checked)} />Obliga a elegir opción (ej. guisado)</label>
         <label className="flex items-center gap-2 text-sm"><input type="checkbox" className="h-4 w-4 accent-paliacate" checked={p.activo} onChange={(e) => cambiar("activo", e.target.checked)} />Visible en el menú</label>
         <label className="block text-sm font-semibold">Orden en la lista<input inputMode="numeric" value={p.orden} onChange={(e) => cambiar("orden", Number(e.target.value))} className={`${campo} w-24`} /></label>

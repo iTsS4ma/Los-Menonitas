@@ -6,7 +6,7 @@ import type { Perfil } from "@/lib/perfil";
 export default function Encabezado({ titulo, perfil }: { titulo: string; perfil: Perfil }) {
   const enlaces =
     perfil.rol === "ADMIN"
-      ? [["/admin", "Admin"], ["/mesero", "Mesero"], ["/caja", "Caja"]]
+      ? [["/admin", "Admin"], ["/mesero", "Mesero"], ["/caja", "Caja"], ["/cocina", "Cocina"]]
       : perfil.rol === "MESERO" && perfil.puede_cobrar
         ? [["/mesero", "Mesero"], ["/caja", "Caja"]]
         : [];

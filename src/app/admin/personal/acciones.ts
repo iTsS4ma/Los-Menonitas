@@ -6,7 +6,7 @@ import { crearClienteAdmin } from "@/lib/supabase/admin";
 
 type Resultado = { ok: true } | { ok: false; error: string };
 // Desde la página solo se dan de alta meseros y cajeros; los administradores, desde la base
-const ROLES: Rol[] = ["MESERO", "CAJERO"];
+const ROLES: Rol[] = ["MESERO", "CAJERO", "COCINA"];
 
 async function esAdministrador(id: string) {
   const { data } = await crearClienteAdmin().from("usuarios").select("rol").eq("id", id).maybeSingle();

@@ -10,6 +10,7 @@ export type Persona = { id: string; nombre: string; email: string | null; rol: R
 const ROLES: { valor: Rol; texto: string }[] = [
   { valor: "MESERO", texto: "Mesero" },
   { valor: "CAJERO", texto: "Cajero" },
+  { valor: "COCINA", texto: "Cocina (estación)" },
 ];
 
 // Contraseña fácil de dictar: sin letras ni números que se confunden
