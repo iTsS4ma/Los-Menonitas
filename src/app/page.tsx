@@ -90,9 +90,6 @@ export default function Inicio() {
                   Pedir por WhatsApp
                 </a>
               )}
-              <a href={`tel:${TELEFONO.replace(/\s/g, "")}`} className="rounded-full border-2 border-cafe px-6 py-3 font-semibold hover:bg-cafe hover:text-crema">
-                Llamar {TELEFONO}
-              </a>
               <a href="#menu" className="rounded-full px-4 py-3 font-semibold underline decoration-queso decoration-4 underline-offset-4">
                 Ver el menú ↓
               </a>
