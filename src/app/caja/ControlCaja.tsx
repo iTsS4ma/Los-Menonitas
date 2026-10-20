@@ -3,24 +3,16 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { crearClienteNavegador } from "@/lib/supabase/client";
 import { dinero, errorTexto } from "@/lib/formato";
-import { imprimir, ticketCorte } from "@/lib/impresoraBT";
+import { imprimir } from "@/lib/impresoraBT";
+import { FONDO_FIJO, textoDiferencia, ticketCierreCaja, type DatosCierre } from "@/lib/ticketsCaja";
 
 type Movimiento = { tipo: "ENTRADA" | "SALIDA"; monto: number; motivo: string; hora: string };
-type Cierre = {
-  ventas_efectivo: number;
-  entradas: number;
-  salidas: number;
-  esperado: number;
-  contado: number;
-  diferencia: number;
-  fondo?: number;
-  desglose?: Record<string, number> | null;
-};
+type Cierre = DatosCierre & { fondo?: number };
 export type EstadoCaja = {
   estado: "SIN_ABRIR" | "ABIERTA" | "CERRADA";
   fondo?: number;
-  /** Con cuánto abre hoy: lo que quedó al cerrar (null = primera vez) */
-  fondo_siguiente?: number | null;
+  /** Lo que se contó al cerrar la última caja (para avisar cuánto retirar) */
+  ultimo_contado?: number | null;
   movimientos?: Movimiento[];
   cierre?: Cierre | null;
 };
@@ -29,6 +21,7 @@ export type EstadoCaja = {
 const BILLETES = [1000, 500, 200, 100, 50, 20];
 const MONEDAS = [20, 10, 5, 2, 1, 0.5];
 const etiquetaDen = (d: number) => (d < 1 ? "50¢" : `$${d}`);
+const diferenciaTexto = textoDiferencia;
 // Las monedas de $20 se guardan aparte de los billetes de $20
 const claveDen = (d: number, moneda: boolean) => (moneda && d === 20 ? "20m" : String(d));
 
@@ -45,13 +38,13 @@ export default function ControlCaja({ onCambio }: { onCambio: (e: EstadoCaja | n
   const [estado, setEstado] = useState<EstadoCaja | null>(null);
   const [error, setError] = useState("");
   const [ocupado, setOcupado] = useState(false);
-  const [fondo, setFondo] = useState("");
   const [ventana, setVentana] = useState<"movimiento" | "cierre" | null>(null);
   const [tipo, setTipo] = useState<"SALIDA" | "ENTRADA">("SALIDA");
   const [monto, setMonto] = useState("");
   const [motivo, setMotivo] = useState("");
   const [conteo, setConteo] = useState<Record<string, string>>({});
   const [notas, setNotas] = useState("");
+  const [tarjeta, setTarjeta] = useState("");
   const [resultado, setResultado] = useState<Cierre | null>(null);
 
   const cargar = useCallback(async () => {
@@ -82,11 +75,9 @@ export default function ControlCaja({ onCambio }: { onCambio: (e: EstadoCaja | n
     return data ?? true;
   }
 
-  // Normalmente el fondo lo pone el sistema (lo que quedó ayer); solo la primera vez se escribe
+  // La caja siempre abre con $1,000
   async function abrir() {
-    const primeraVez = estado?.fondo_siguiente == null;
-    if (primeraVez && (fondo === "" || Number(fondo) < 0)) return setError("Escribe con cuánto efectivo empieza la caja.");
-    if (await correr(() => supabase.rpc("abrir_caja", primeraVez ? { p_fondo: Number(fondo) } : {}))) setFondo("");
+    await correr(() => supabase.rpc("abrir_caja", {}));
   }
 
   async function guardarMovimiento() {
@@ -112,11 +103,13 @@ export default function ControlCaja({ onCambio }: { onCambio: (e: EstadoCaja | n
       const n = Math.max(0, Math.trunc(Number(conteo[claveDen(d, m)]) || 0));
       if (n) desglose[String(d)] = (desglose[String(d)] ?? 0) + n;
     });
-    if (!window.confirm(`¿Cerrar la caja con ${dinero(totalConteo)} contados? Ya no se podrá cobrar en efectivo hoy.`)) return;
-    const data = await correr(() => supabase.rpc("cerrar_caja", { p_desglose: desglose, p_notas: notas }));
+    if (tarjeta === "" || Number(tarjeta) < 0) return setError("Escribe el total de tarjeta de la terminal Clip (0 si no hubo).");
+    if (!window.confirm(`¿Cerrar la caja con ${dinero(totalConteo)} en efectivo y ${dinero(Number(tarjeta))} en tarjeta? Ya no se podrá cobrar en efectivo hoy.`)) return;
+    const data = await correr(() => supabase.rpc("cerrar_caja", { p_desglose: desglose, p_tarjeta: Number(tarjeta), p_notas: notas }));
     if (data && data !== true) {
       setResultado(data as Cierre);
       setConteo({});
+      setTarjeta("");
       setNotas("");
     }
   }
@@ -127,29 +120,11 @@ export default function ControlCaja({ onCambio }: { onCambio: (e: EstadoCaja | n
       const ahora = new Date();
       await imprimir(
         "caja",
-        ticketCorte({
-          titulo: "CIERRE DE CAJA",
-          fecha: ahora.toLocaleDateString("en-CA", { timeZone: "America/Mexico_City" }),
-          hora: hora(ahora.toISOString()),
-          renglones: [
-            ["Fondo inicial", dinero(Number(c.fondo ?? estado?.fondo ?? 0))],
-            ["Ventas en efectivo", dinero(Number(c.ventas_efectivo))],
-            ["Entradas", dinero(Number(c.entradas))],
-            ["Salidas", `-${dinero(Number(c.salidas))}`],
-            ["", ""],
-            ["Efectivo esperado", dinero(Number(c.esperado))],
-            ["Efectivo contado", dinero(Number(c.contado))],
-            ...(c.desglose
-              ? ([["", ""], ["Conteo:", ""]] as [string, string][]).concat(
-                  Object.entries(c.desglose)
-                    .sort((a, b) => Number(b[0]) - Number(a[0]))
-                    .map(([d, n]) => [`  ${n} x ${etiquetaDen(Number(d))}`, dinero(Number(d) * Number(n))] as [string, string])
-                )
-              : []),
-          ],
-          etiquetaTotal: Number(c.diferencia) < 0 ? "FALTA" : "SOBRA",
-          total: dinero(Math.abs(Number(c.diferencia))),
-        })
+        ticketCierreCaja(
+          { ...c, fondo: c.fondo ?? estado?.fondo },
+          ahora.toLocaleDateString("en-CA", { timeZone: "America/Mexico_City" }),
+          hora(ahora.toISOString())
+        )
       );
     } catch (e) {
       setError(e instanceof Error ? e.message : "No se pudo imprimir. Conecta la impresora de caja.");
@@ -163,53 +138,37 @@ export default function ControlCaja({ onCambio }: { onCambio: (e: EstadoCaja | n
 
   // ----- Caja sin abrir: hay que registrar el fondo antes de cobrar en efectivo -----
   if (estado.estado === "SIN_ABRIR") {
-    const primeraVez = estado.fondo_siguiente == null;
+    const ultimo = estado.ultimo_contado;
+    const sobra = ultimo != null ? Number(ultimo) - FONDO_FIJO : 0;
     return (
       <div className="w-full space-y-3 rounded-2xl border-2 border-paliacate bg-white p-5">
         <div>
           <h2 className="font-display text-2xl font-extrabold">Abrir caja</h2>
-          <p className="text-sm text-cafe-medio">
-            {primeraVez
-              ? "Es la primera vez: cuenta el efectivo con el que empieza la caja y escríbelo. Desde mañana el sistema lo pone solo."
-              : "La caja empieza con el dinero que quedó al cerrar el día anterior. Sin abrir la caja no se puede cobrar en efectivo."}
-          </p>
+          <p className="text-sm text-cafe-medio">La caja siempre abre con {dinero(FONDO_FIJO)}. Sin abrir la caja no se puede cobrar en efectivo.</p>
         </div>
-        {primeraVez ? (
-          <div className="flex max-w-sm gap-2">
-            <div className="relative flex-1">
-              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-lg font-bold text-cafe-medio">$</span>
-              <input
-                type="number"
-                inputMode="decimal"
-                value={fondo}
-                onChange={(e) => setFondo(e.target.value)}
-                placeholder="0.00"
-                className={`${campo} pl-8 font-display text-2xl font-bold`}
-              />
-            </div>
-            <button
-              disabled={ocupado || fondo === ""}
-              onClick={abrir}
-              className="rounded-xl bg-paliacate px-6 font-semibold text-white hover:bg-paliacate-oscuro disabled:opacity-40"
-            >
-              Abrir caja
-            </button>
-          </div>
-        ) : (
-          <div className="flex flex-wrap items-center gap-4">
-            <p>
-              <span className="block text-xs font-semibold uppercase tracking-wider text-cafe-medio">Fondo inicial</span>
-              <span className="font-display text-3xl font-extrabold">{dinero(Number(estado.fondo_siguiente))}</span>
-            </p>
-            <button
-              disabled={ocupado}
-              onClick={abrir}
-              className="rounded-xl bg-paliacate px-8 py-3 font-semibold text-white hover:bg-paliacate-oscuro disabled:opacity-40"
-            >
-              {ocupado ? "Abriendo…" : "Abrir caja"}
-            </button>
-          </div>
-        )}
+        <div className="rounded-xl bg-queso-claro px-4 py-3 text-sm">
+          <strong>Recuerda:</strong> en la caja debe haber exactamente {dinero(FONDO_FIJO)} para empezar.
+          {ultimo != null && sobra > 0 && (
+            <>
+              {" "}Al cerrar la última vez se contaron <strong>{dinero(Number(ultimo))}</strong>: si todavía no se retiraron,{" "}
+              <strong>retira {dinero(sobra)}</strong> antes de abrir.
+            </>
+          )}
+          {ultimo != null && sobra < 0 && (
+            <>
+              {" "}Al cerrar la última vez quedaron <strong>{dinero(Number(ultimo))}</strong>: faltan <strong>{dinero(Math.abs(sobra))}</strong> para completar{" "}
+              {dinero(FONDO_FIJO)}. Avisa al administrador.
+            </>
+          )}
+          {ultimo == null && <> Si hay más, retira la diferencia antes de abrir.</>}
+        </div>
+        <button
+          disabled={ocupado}
+          onClick={abrir}
+          className="rounded-xl bg-paliacate px-8 py-3 font-semibold text-white hover:bg-paliacate-oscuro disabled:opacity-40"
+        >
+          {ocupado ? "Abriendo…" : `Abrir caja con ${dinero(FONDO_FIJO)}`}
+        </button>
         {error && <p className="text-sm text-paliacate">{error}</p>}
       </div>
     );
@@ -328,6 +287,20 @@ export default function ControlCaja({ onCambio }: { onCambio: (e: EstadoCaja | n
                     : Number(resultado.diferencia) < 0
                     ? `Faltan ${dinero(Math.abs(Number(resultado.diferencia)))}`
                     : `Sobran ${dinero(Number(resultado.diferencia))}`}
+                  <span className="block font-sans text-xs font-semibold">Efectivo</span>
+                </div>
+                {resultado.tarjeta_sistema != null && (
+                  <div className="rounded-xl border border-borde px-4 py-3 text-sm">
+                    <div className="flex justify-between"><span>Tarjeta en el sistema</span><strong className="tabular-nums">{dinero(Number(resultado.tarjeta_sistema))}</strong></div>
+                    <div className="flex justify-between"><span>Tarjeta en la terminal</span><strong className="tabular-nums">{dinero(Number(resultado.tarjeta_terminal))}</strong></div>
+                    <div className={`mt-1 text-center font-display text-lg font-extrabold ${Number(resultado.tarjeta_diferencia) === 0 ? "text-hoja" : "text-paliacate"}`}>
+                      Tarjeta: {diferenciaTexto(Number(resultado.tarjeta_diferencia))}
+                    </div>
+                  </div>
+                )}
+                <div className="rounded-xl bg-cafe px-4 py-3 text-center text-crema">
+                  <span className="block text-sm">Deja {dinero(FONDO_FIJO)} en la caja y retira</span>
+                  <span className="font-display text-3xl font-extrabold">{dinero(Number(resultado.retiro ?? Math.max(Number(resultado.contado) - FONDO_FIJO, 0)))}</span>
                 </div>
                 <button onClick={() => imprimirCierre(resultado)} className="w-full rounded-xl bg-paliacate py-3 font-semibold text-white hover:bg-paliacate-oscuro">
                   Imprimir cierre
@@ -372,9 +345,24 @@ export default function ControlCaja({ onCambio }: { onCambio: (e: EstadoCaja | n
                   <span className="font-semibold">Total contado</span>
                   <span className="font-display text-3xl font-extrabold tabular-nums">{dinero(totalConteo)}</span>
                 </div>
+                <label className="block">
+                  <span className="text-sm font-semibold">Total de tarjeta en la terminal Clip</span>
+                  <span className="block text-xs text-cafe-medio">Solo los cargos, sin propinas. Escribe 0 si no hubo.</span>
+                  <div className="relative mt-1">
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-lg font-bold text-cafe-medio">$</span>
+                    <input
+                      type="number"
+                      inputMode="decimal"
+                      placeholder="0.00"
+                      value={tarjeta}
+                      onChange={(e) => setTarjeta(e.target.value)}
+                      className={`${campo} pl-8 font-display text-xl font-bold`}
+                    />
+                  </div>
+                </label>
                 <input placeholder="Notas (opcional)" value={notas} onChange={(e) => setNotas(e.target.value)} className={campo} />
                 <button
-                  disabled={ocupado}
+                  disabled={ocupado || tarjeta === ""}
                   onClick={cerrar}
                   className="w-full rounded-xl bg-cafe py-3 font-semibold text-crema hover:bg-cafe/90 disabled:opacity-40"
                 >

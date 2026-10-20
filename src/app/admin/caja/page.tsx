@@ -3,6 +3,8 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { crearClienteNavegador } from "@/lib/supabase/client";
 import { diaMX, dinero, errorTexto } from "@/lib/formato";
+import { imprimir } from "@/lib/impresoraBT";
+import { etiquetaDen, textoDiferencia, ticketCierreCaja } from "@/lib/ticketsCaja";
 
 type Corte = {
   id: string;
@@ -19,6 +21,12 @@ type Corte = {
   efectivo_contado: number | null;
   diferencia: number | null;
   notas: string | null;
+  desglose?: Record<string, number> | null;
+  retiro?: number | null;
+  tarjeta_terminal?: number | null;
+  tarjeta_sistema?: number | null;
+  tarjeta_diferencia?: number | null;
+  transferencia_sistema?: number | null;
 };
 type Movimiento = { id: string; corte_id: string; tipo: string; monto: number; motivo: string; creado_en: string; creado_por: string | null };
 
@@ -33,6 +41,7 @@ export default function HistorialCaja() {
   const [nombres, setNombres] = useState<Map<string, string>>(new Map());
   const [abierto, setAbierto] = useState<string | null>(null);
   const [error, setError] = useState("");
+  const [avisoImpresion, setAvisoImpresion] = useState<{ id: string; texto: string; error: boolean } | null>(null);
 
   const cargar = useCallback(async () => {
     const [c, m, u] = await Promise.all([
@@ -55,6 +64,33 @@ export default function HistorialCaja() {
     const { error } = await supabase.rpc("reabrir_caja");
     if (error) return setError(errorTexto(error));
     await cargar();
+  }
+
+  // Reimprime el cierre de un día por la impresora de caja de esta computadora
+  async function reimprimirCierre(c: Corte) {
+    setAvisoImpresion({ id: c.id, texto: "Imprimiendo…", error: false });
+    try {
+      await imprimir(
+        "caja",
+        ticketCierreCaja(
+          {
+            fondo: c.fondo_inicial, ventas_efectivo: c.ventas_efectivo, entradas: c.entradas, salidas: c.salidas,
+            esperado: c.efectivo_esperado, contado: c.efectivo_contado, diferencia: c.diferencia, desglose: c.desglose,
+            retiro: c.retiro, tarjeta_terminal: c.tarjeta_terminal, tarjeta_sistema: c.tarjeta_sistema,
+            tarjeta_diferencia: c.tarjeta_diferencia, transferencia_sistema: c.transferencia_sistema,
+          },
+          c.dia,
+          hora(c.cerrado_en)
+        )
+      );
+      setAvisoImpresion({ id: c.id, texto: "Cierre reimpreso.", error: false });
+    } catch (e) {
+      setAvisoImpresion({
+        id: c.id,
+        texto: `${e instanceof Error ? e.message : "No se pudo imprimir"}. Conecta la impresora de caja en la pantalla de Caja.`,
+        error: true,
+      });
+    }
   }
 
   const nombre = (id: string | null) => (id ? nombres.get(id) ?? "Usuario eliminado" : "—");
@@ -91,12 +127,13 @@ export default function HistorialCaja() {
               <th className="px-4 py-3 text-right">Esperado</th>
               <th className="px-4 py-3 text-right">Contado</th>
               <th className="px-4 py-3 text-right">Diferencia</th>
+              <th className="px-4 py-3 text-right">Tarjeta</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-borde/70">
             {cortes.length === 0 && (
               <tr>
-                <td colSpan={8} className="px-4 py-10 text-center text-cafe-medio">
+                <td colSpan={9} className="px-4 py-10 text-center text-cafe-medio">
                   Todavía no se ha abierto ninguna caja.
                 </td>
               </tr>
@@ -135,10 +172,19 @@ export default function HistorialCaja() {
                         </span>
                       )}
                     </td>
+                    <td className="whitespace-nowrap px-4 py-3 text-right font-display font-bold tabular-nums">
+                      {!cerrado || c.tarjeta_diferencia == null ? (
+                        <span className="text-cafe-medio">—</span>
+                      ) : (
+                        <span className={Number(c.tarjeta_diferencia) === 0 ? "text-hoja" : "text-paliacate"}>
+                          {textoDiferencia(Number(c.tarjeta_diferencia))}
+                        </span>
+                      )}
+                    </td>
                   </tr>
                   {expandido && (
                     <tr className="bg-crema/40">
-                      <td colSpan={8} className="space-y-2 px-4 pb-4 pt-1">
+                      <td colSpan={9} className="space-y-2 px-4 pb-4 pt-1">
                         {deDia.length === 0 ? (
                           <p className="text-sm text-cafe-medio">Sin entradas ni salidas.</p>
                         ) : (
@@ -157,10 +203,49 @@ export default function HistorialCaja() {
                             ))}
                           </ul>
                         )}
+                        {cerrado && (
+                          <div className="grid gap-2 rounded-xl border border-borde bg-white px-4 py-3 text-sm sm:grid-cols-2">
+                            <div>
+                              {c.retiro != null && (
+                                <p>
+                                  Retiro al cerrar: <strong>{dinero(Number(c.retiro))}</strong> (se dejan $1,000)
+                                </p>
+                              )}
+                              {c.tarjeta_sistema != null && (
+                                <p>
+                                  Tarjeta: sistema {dinero(Number(c.tarjeta_sistema))} · terminal {dinero(Number(c.tarjeta_terminal))}
+                                </p>
+                              )}
+                              {c.transferencia_sistema != null && <p>Transferencias: {dinero(Number(c.transferencia_sistema))}</p>}
+                            </div>
+                            {c.desglose && Object.keys(c.desglose).length > 0 && (
+                              <p className="text-cafe-medio">
+                                Conteo:{" "}
+                                {Object.entries(c.desglose)
+                                  .sort((a, b) => Number(b[0]) - Number(a[0]))
+                                  .map(([d, n]) => `${n} × ${etiquetaDen(Number(d))}`)
+                                  .join(" · ")}
+                              </p>
+                            )}
+                          </div>
+                        )}
                         <p className="text-xs text-cafe-medio">
                           {cerrado ? `Cerró ${nombre(c.cerrado_por)} a las ${hora(c.cerrado_en)}.` : "Todavía no se cierra."}
                           {c.notas ? ` Notas: ${c.notas}` : ""}
                         </p>
+                        {cerrado && (
+                          <div className="flex flex-wrap items-center gap-3">
+                            <button
+                              onClick={() => reimprimirCierre(c)}
+                              className="rounded-lg border border-cafe px-3 py-1.5 text-sm font-semibold hover:bg-crema"
+                            >
+                              Reimprimir cierre
+                            </button>
+                            {avisoImpresion?.id === c.id && (
+                              <span className={`text-sm ${avisoImpresion.error ? "text-paliacate" : "text-hoja"}`}>{avisoImpresion.texto}</span>
+                            )}
+                          </div>
+                        )}
                         {cerrado && c.dia === hoy && (
                           <button onClick={reabrir} className="rounded-lg border border-paliacate/40 px-3 py-1.5 text-sm font-semibold text-paliacate hover:bg-paliacate-claro">
                             Reabrir caja de hoy

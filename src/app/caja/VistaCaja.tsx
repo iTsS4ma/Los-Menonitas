@@ -222,6 +222,24 @@ export default function VistaCaja({
 
   const [errorImpresion, setErrorImpresion] = useState<{ cuenta: Cuenta; mensaje: string; sinPermiso: boolean } | null>(null);
 
+  // Datos del ticket de cuenta. Los mismos se guardan al cobrar para poder reimprimirlo igual.
+  function datosTicket(cuenta: Cuenta, desc: { etiqueta: string; monto: number } | null, hora: string) {
+    const consumo = totalCuenta(cuenta.pedidos);
+    return {
+      cuenta: nombreCuenta(cuenta),
+      fecha: `${diaMX()} ${hora}`,
+      renglones: agruparProductos(cuenta).map((it) => ({
+        cantidad: it.unidad === "KG" ? `${it.cantidad.toFixed(3)}kg` : `${it.cantidad}x`,
+        nombre: it.nombre,
+        importe: dinero(it.subtotal),
+      })),
+      total: dinero(consumo - (desc?.monto ?? 0)),
+      subtotal: desc ? dinero(consumo) : undefined,
+      descuento: desc ? { etiqueta: desc.etiqueta, monto: `-${dinero(desc.monto)}` } : undefined,
+      cortesia: !!desc && consumo - desc.monto <= 0,
+    };
+  }
+
   // Ticket de cuenta: por la impresora Bluetooth de caja si hay una configurada;
   // si no, con la ventana de impresión del navegador.
   async function iniciarImpresion(cuenta: Cuenta, reconectar = false) {
@@ -238,19 +256,7 @@ export default function VistaCaja({
       return;
     }
 
-    const bytes = bytesTicketCuenta({
-      cuenta: nombreCuenta(cuenta),
-      fecha: `${diaMX()} ${hora}`,
-      renglones: agruparProductos(cuenta).map((it) => ({
-        cantidad: it.unidad === "KG" ? `${it.cantidad.toFixed(3)}kg` : `${it.cantidad}x`,
-        nombre: it.nombre,
-        importe: dinero(it.subtotal),
-      })),
-      total: dinero(consumo - (desc?.monto ?? 0)),
-      subtotal: desc ? dinero(consumo) : undefined,
-      descuento: desc ? { etiqueta: desc.etiqueta, monto: `-${dinero(desc.monto)}` } : undefined,
-      cortesia: !!desc && consumo - desc.monto <= 0,
-    });
+    const bytes = bytesTicketCuenta(datosTicket(cuenta, desc, hora));
     try {
       if (reconectar) await elegirImpresora("caja");
       await imprimir("caja", bytes);
@@ -282,14 +288,19 @@ export default function VistaCaja({
       return;
     }
 
-    setCargando(true);
-
     // Registra el pago y cierra la cuenta en un solo paso (función cobrar_cuenta de la base):
     // guarda método, total, redondeo y fecha de cierre, que es lo que lee Reportes.
     if (!esCortesia && metodo === "TARJETA" && !referenciaClip.trim()) {
       alert("Escribe la referencia del comprobante de Clip.");
       return;
     }
+    setCargando(true);
+    // Ticket original (el que se le dio al cliente, o uno con la hora del cobro si no se imprimió)
+    const original = datosTicket(
+      seleccionada,
+      codigo ? { etiqueta: etiquetaCodigo(codigo), monto: descuento } : null,
+      ticketCuenta?.id === seleccionada.id && horaTicket ? horaTicket : horaActualMX()
+    );
     const { error: updateError } = await supabase.rpc("cobrar_cuenta_v2", {
       p_cuenta_id: seleccionada.id,
       p_metodo: metodo,
@@ -306,6 +317,8 @@ export default function VistaCaja({
       alert(`Error al registrar el cobro: ${updateError.message}`);
       return;
     }
+    // Se guarda el ticket para reimprimirlo igual desde Admin (si falla, el cobro ya quedó)
+    await supabase.from("cuentas").update({ ticket: original }).eq("id", seleccionada.id);
 
     setCuentaIdSeleccionada(null);
     setPagoCon("");
@@ -534,7 +547,7 @@ export default function VistaCaja({
                       <input
                         value={codigoTexto}
                         onChange={(e) => setCodigoTexto(e.target.value.toUpperCase())}
-                        placeholder="Ej. K7M2PX"  
+                        placeholder="Ej. K7M2PX"
                         autoCapitalize="characters"
                         autoComplete="off"
                         maxLength={10}

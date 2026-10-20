@@ -6,6 +6,7 @@ import { useTiempoReal } from "@/hooks/useTiempoReal";
 import { crearClienteNavegador } from "@/lib/supabase/client";
 import { diaMX, dinero, nombreCuenta, totalCuenta } from "@/lib/formato";
 import type { Cuenta, Pedido, Mesa } from "@/lib/tipos";
+import { imprimir, ticketCuenta } from "@/lib/impresoraBT";
 
 // Cuenta cerrada con los campos extra que guarda la base al cobrar
 type CuentaCerrada = Cuenta & {
@@ -17,7 +18,19 @@ type CuentaCerrada = Cuenta & {
   consumo?: number | null;
   descuento?: number | null;
   pago?: { propina: number; referencia: string | null } | null;
+  ticket?: Parameters<typeof ticketCuenta>[0] | null;
 };
+
+type FiltroMetodo = "TODOS" | "EFECTIVO" | "TARJETA" | "TRANSFERENCIA" | "CORTESIA" | "DESCUENTO";
+const FILTROS: [FiltroMetodo, string][] = [
+  ["TODOS", "Todas"],
+  ["EFECTIVO", "Efectivo"],
+  ["TARJETA", "Tarjeta"],
+  ["TRANSFERENCIA", "Transferencia"],
+  ["CORTESIA", "Cortesía"],
+  ["DESCUENTO", "Con descuento"],
+];
+type Orden = "reciente" | "antiguo" | "mayor" | "menor";
 
 type Periodo = "hoy" | "semana" | "mes" | "anio" | "todo" | "personalizado";
 
@@ -78,6 +91,9 @@ export default function PaginaAdmin() {
 
   const [ordenProductos, setOrdenProductos] = useState<"importe" | "cantidad">("importe");
   const [verTodos, setVerTodos] = useState(false);
+  const [filtroMetodo, setFiltroMetodo] = useState<FiltroMetodo>("TODOS");
+  const [orden, setOrden] = useState<Orden>("reciente");
+  const [avisoTicket, setAvisoTicket] = useState<{ id: string; texto: string; error: boolean } | null>(null);
 
   const cargarDatos = useCallback(async () => {
     setCargando(true);
@@ -163,6 +179,78 @@ export default function PaginaAdmin() {
   }, [cargarDatos]);
 
   const totalDe = (c: CuentaCerrada) => Number(c.total_final ?? totalCuenta(c.pedidos));
+
+  // Lista filtrada por método y ordenada
+  const esCortesia = (c: CuentaCerrada) => c.metodo_pago === "CORTESIA" || c.metodo_pago === "PREFERENTE";
+  const lista = useMemo(() => {
+    const filtradas = cuentasCerradas.filter((c) => {
+      const m = c.metodo_pago ?? "EFECTIVO";
+      if (filtroMetodo === "TODOS") return true;
+      if (filtroMetodo === "CORTESIA") return esCortesia(c);
+      if (filtroMetodo === "DESCUENTO") return !esCortesia(c) && Number(c.descuento ?? 0) > 0;
+      return m === filtroMetodo;
+    });
+    const fecha = (c: CuentaCerrada) => String(c.cerrada_en || c.abierta_en);
+    return [...filtradas].sort((a, b) =>
+      orden === "reciente"
+        ? fecha(b).localeCompare(fecha(a))
+        : orden === "antiguo"
+        ? fecha(a).localeCompare(fecha(b))
+        : orden === "mayor"
+        ? totalDe(b) - totalDe(a)
+        : totalDe(a) - totalDe(b)
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cuentasCerradas, filtroMetodo, orden]);
+
+  // Reimprime el ticket tal como salió al cobrar (por la impresora de caja de esta computadora).
+  // Las cuentas cobradas antes de esta versión no lo tienen guardado: se arma con sus productos.
+  async function reimprimirTicket(c: CuentaCerrada) {
+    setAvisoTicket({ id: c.id, texto: "Imprimiendo…", error: false });
+    let datos = c.ticket ?? null;
+    if (!datos) {
+      const mapa = new Map<string, { cantidad: number; unidad: string; importe: number }>();
+      c.pedidos
+        .filter((p) => p.estado !== "CANCELADO")
+        .forEach((p) =>
+          p.detalle_pedido
+            .filter((d) => d.estado === "ACTIVO")
+            .forEach((d) => {
+              const n = `${d.nombre_producto}${d.nombre_opcion ? ` (${d.nombre_opcion})` : ""}${d.con_quesillo ? " + quesillo" : ""}`;
+              const r = mapa.get(n) ?? { cantidad: 0, unidad: d.unidad, importe: 0 };
+              r.cantidad += Number(d.cantidad);
+              r.importe += Number(d.importe);
+              mapa.set(n, r);
+            })
+        );
+      const consumo = Number(c.consumo ?? totalCuenta(c.pedidos));
+      const desc = Number(c.descuento ?? 0);
+      const f = new Date(c.cerrada_en || c.abierta_en);
+      datos = {
+        cuenta: nombreCuenta(c),
+        fecha: `${diaDe(f.toISOString())} ${f.toLocaleTimeString("es-MX", { timeZone: "America/Mexico_City", hour: "2-digit", minute: "2-digit", hour12: true })}`,
+        renglones: [...mapa.entries()].map(([nombre, r]) => ({
+          cantidad: r.unidad === "KG" ? `${r.cantidad.toFixed(3)}kg` : `${r.cantidad}x`,
+          nombre,
+          importe: dinero(r.importe),
+        })),
+        total: dinero(consumo - desc),
+        subtotal: desc > 0 ? dinero(consumo) : undefined,
+        descuento: desc > 0 ? { etiqueta: esCortesia(c) ? "Cortesía" : "Descuento", monto: `-${dinero(desc)}` } : undefined,
+        cortesia: desc > 0 && consumo - desc <= 0,
+      };
+    }
+    try {
+      await imprimir("caja", ticketCuenta(datos));
+      setAvisoTicket({ id: c.id, texto: "Ticket reimpreso.", error: false });
+    } catch (e) {
+      setAvisoTicket({
+        id: c.id,
+        texto: `${e instanceof Error ? e.message : "No se pudo imprimir"}. Conecta la impresora de caja en la pantalla de Caja.`,
+        error: true,
+      });
+    }
+  }
 
   // Totales por método
   const resumen = useMemo(() => {
@@ -376,13 +464,48 @@ export default function PaginaAdmin() {
       {/* Cuentas cobradas */}
       <div className="overflow-hidden rounded-2xl border border-borde bg-white">
         <div className="border-b border-borde px-5 py-3">
-          <h2 className="font-display text-lg font-bold">Cuentas cobradas ({cuentasCerradas.length})</h2>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <h2 className="font-display text-lg font-bold">
+              Cuentas cobradas ({lista.length === cuentasCerradas.length ? cuentasCerradas.length : `${lista.length} de ${cuentasCerradas.length}`})
+            </h2>
+            <select
+              value={orden}
+              onChange={(e) => setOrden(e.target.value as Orden)}
+              className="rounded-xl border border-borde bg-white px-3 py-2 text-sm font-semibold"
+            >
+              <option value="reciente">Más recientes primero</option>
+              <option value="antiguo">Más antiguas primero</option>
+              <option value="mayor">Mayor total primero</option>
+              <option value="menor">Menor total primero</option>
+            </select>
+          </div>
+          <div className="mt-3 flex flex-wrap gap-1.5">
+            {FILTROS.map(([f, t]) => (
+              <button
+                key={f}
+                onClick={() => setFiltroMetodo(f)}
+                className={`rounded-full px-3.5 py-1.5 text-sm font-semibold ${
+                  filtroMetodo === f ? "bg-cafe text-crema" : "border border-borde bg-white text-cafe-medio hover:border-cafe-medio"
+                }`}
+              >
+                {t}
+              </button>
+            ))}
+          </div>
+          {filtroMetodo !== "TODOS" && lista.length > 0 && (
+            <p className="mt-2 text-sm text-cafe-medio">
+              Total de {FILTROS.find(([f]) => f === filtroMetodo)?.[1].toLowerCase()}:{" "}
+              <strong className="text-cafe">{dinero(lista.reduce((t, c) => t + totalDe(c), 0))}</strong>
+            </p>
+          )}
         </div>
 
         {cargando ? (
           <div className="py-12 text-center text-sm text-cafe-medio">Cargando ventas…</div>
-        ) : cuentasCerradas.length === 0 ? (
-          <div className="py-12 text-center text-sm text-cafe-medio">No hay ventas en este periodo.</div>
+        ) : lista.length === 0 ? (
+          <div className="py-12 text-center text-sm text-cafe-medio">
+            {cuentasCerradas.length === 0 ? "No hay ventas en este periodo." : "No hay cuentas con ese filtro."}
+          </div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-left text-sm">
@@ -397,7 +520,7 @@ export default function PaginaAdmin() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-borde/70">
-                {cuentasCerradas.map((c) => {
+                {lista.map((c) => {
                   const fecha = c.cerrada_en || c.abierta_en;
                   const fechaFormateada = fecha
                     ? new Date(fecha).toLocaleString("es-MX", {
@@ -468,6 +591,17 @@ export default function PaginaAdmin() {
                             )}
                             {metodo === "TARJETA" && c.pago?.referencia && <span>Referencia Clip: {c.pago.referencia}</span>}
                             {Number(c.pago?.propina ?? 0) > 0 && <span>Propina: {dinero(Number(c.pago?.propina))}</span>}
+                          </div>
+                          <div className="mt-3 flex flex-wrap items-center gap-3">
+                            <button
+                              onClick={() => reimprimirTicket(c)}
+                              className="rounded-lg border border-cafe px-3 py-1.5 text-sm font-semibold hover:bg-crema"
+                            >
+                              Reimprimir ticket
+                            </button>
+                            {avisoTicket?.id === c.id && (
+                              <span className={`text-sm ${avisoTicket.error ? "text-paliacate" : "text-hoja"}`}>{avisoTicket.texto}</span>
+                            )}
                           </div>
                         </td>
                       </tr>

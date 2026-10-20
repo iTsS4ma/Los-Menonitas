@@ -14,6 +14,10 @@ type PedidoCocina = Pedido & { creado_por: string | null; cuentas: Omit<Cuenta, 
 type Filtro = "TODO" | Estacion;
 const ESTACIONES: Estacion[] = ["COCINA", "GARNACHAS"];
 const HORAS_ATRAS = 12;
+// Prioridad: manda el tiempo de espera. Una orden chica (2 piezas o menos) cuenta como si
+// llevara VENTAJA_RAPIDA minutos más, y se marca "Rápida" solo cuando ya esperó MIN_RAPIDA.
+const VENTAJA_RAPIDA = 4;
+const MIN_RAPIDA = 3;
 
 const hora = (iso: string) =>
   new Date(iso).toLocaleTimeString("es-MX", { timeZone: "America/Mexico_City", hour: "2-digit", minute: "2-digit", hour12: true });
@@ -150,7 +154,7 @@ export default function VistaCocina() {
           renglones: (c.renglones ?? []).map((texto) => ({ texto })),
         });
       }
-      const { platos, rapida } = platosEstacion(p, c.estacion);
+      const { platos } = platosEstacion(p, c.estacion);
       if (platos.length === 0) return null; // todo se canceló: no hay nada que imprimir
       return ticketComandaEstacion({
         estacion: NOMBRE_ESTACION[c.estacion],
@@ -158,7 +162,6 @@ export default function VistaCocina() {
         ronda: p.numero_ronda,
         hora: hora(c.creada_en),
         mesero: mesero(p),
-        rapida,
         platos,
       });
     },
@@ -249,7 +252,14 @@ export default function VistaCocina() {
       .filter((x) => x.platos.length > 0);
   }, [comandas, pedidos, filtro]);
 
-  const enEspera = ordenes.filter((o) => !o.c.lista_en);
+  // Orden de trabajo: la que más tiempo lleva esperando primero; las chicas con algo de ventaja
+  const enEspera = ordenes
+    .filter((o) => !o.c.lista_en)
+    .map((o) => {
+      const min = (ahora - new Date(o.c.creada_en).getTime()) / 60000;
+      return { ...o, min, prioridad: min + (o.rapida ? VENTAJA_RAPIDA : 0) };
+    })
+    .sort((a, b) => b.prioridad - a.prioridad || a.c.creada_en.localeCompare(b.c.creada_en));
   const listas = ordenes.filter((o) => o.c.lista_en).sort((a, b) => (b.c.lista_en ?? "").localeCompare(a.c.lista_en ?? "")).slice(0, 12);
 
   // Lo que falta por preparar, sumado (para cocinar por tanda)
@@ -362,8 +372,8 @@ export default function VistaCocina() {
         </p>
       ) : (
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-          {enEspera.map(({ c, p, platos, rapida }) => {
-            const min = Math.floor((ahora - new Date(c.creada_en).getTime()) / 60000);
+          {enEspera.map(({ c, p, platos, rapida, min: minExacto }, idx) => {
+            const min = Math.floor(minExacto);
             const color = min >= 10 ? "border-paliacate bg-paliacate-claro" : min >= 5 ? "border-queso bg-queso-claro" : "border-borde bg-white";
             return (
               <article key={c.id} className={`flex flex-col rounded-2xl border-2 p-4 ${color}`}>
@@ -383,7 +393,8 @@ export default function VistaCocina() {
                   </div>
                 </div>
                 <div className="mt-2 flex flex-wrap gap-1.5">
-                  {rapida && <span className="rounded-full bg-hoja px-3 py-1 text-sm font-extrabold text-white">⚡ RÁPIDA</span>}
+                  <span className="rounded-full bg-cafe px-3 py-1 text-sm font-extrabold text-crema">#{idx + 1}</span>
+                  {rapida && min >= MIN_RAPIDA && <span className="rounded-full bg-hoja px-3 py-1 text-sm font-extrabold text-white">⚡ RÁPIDA</span>}
                   {!c.impresa_en && <span className="rounded-full bg-paliacate px-3 py-1 text-xs font-bold text-white">Sin imprimir</span>}
                 </div>
                 <div className="mt-3 flex-1 space-y-3">
